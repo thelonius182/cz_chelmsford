@@ -73,10 +73,45 @@ tbl_zenderschema.4 <- tbl_zenderschema.3 |> left_join(tbl_raw_wpgidsinfo, by = j
          afbeelding = feat_img_ids
          ) |> arrange(moro_key)
 
-tunnel <- "<see_pws>"
+# prepare config
+has_value <- function(x) nzchar(x)
+env_tun_auth <- Sys.getenv("CPNM_TUNNEL_AUTH_UBU")
+if (!has_value(env_tun_auth)) stop("Missing (Ubuntu-)authentication for SSH-tunnel to CPNM")
+env_tun_map <- Sys.getenv("CPNM_TUNNEL_MAPPING")
+if (!has_value(env_tun_map)) stop("Missing local/remote mapping for SSH-tunnel to CPNM")
+env_tun_usr <- Sys.getenv("CPNM_TUNNEL_USER")
+if (!has_value(env_tun_usr)) stop("Missing user for SSH-tunnel to CPNM")
 
-# Connect via tunnel
-con <- "<see_pws>"
+env_db_user <- Sys.getenv("CPNM_DB_USER")
+if (!has_value(env_db_user)) stop("Missing CPNM db-user")
+env_db_pwd <- Sys.getenv("CPNM_DB_PWD")
+if (!has_value(env_db_pwd)) stop("Missing CPNM db-password")
+env_db_name <- Sys.getenv("CPNM_DB_NAME")
+if (!has_value(env_db_name)) stop("Missing CPNM db-name")
+env_db_host <- Sys.getenv("CPNM_DB_HOST")
+if (!has_value(env_db_host)) stop("Missing CPNM db-host")
+env_db_port <- Sys.getenv("CPNM_DB_PORT")
+if (!has_value(env_db_port)) stop("Missing CPNM db-port")
+
+# create SSH-tunnel
+tunnel <- system2(
+  "ssh",
+  args = c("-f", "-N",         # run in background, no command
+           "-i", env_tun_auth,
+           "-L", env_tun_map,  # local:remote mapping
+           env_tun_usr),
+  wait = FALSE
+)
+
+# Connect to DB via tunnel
+con <- dbConnect(
+  drv = RMySQL::MySQL(),
+  host = env_db_host,
+  port = as.integer(env_db_port),
+  user = env_db_user,
+  password = env_db_pwd,
+  dbname = env_db_name
+)
 
 # ... run queries ...
 query <- "select t1.name->>'$.nl' as pgm_title, t2.name->>'$.nl' as pgm_genre, t1.id as pgm_title_to_genre_id
@@ -87,13 +122,18 @@ where t1.parent_id is not null
 ;"
 tbl_title2genre_raw <- dbGetQuery(con, query)
 tbl_title2genre <- tbl_title2genre_raw |> mutate(pgm_title = str_replace_all(pgm_title, "&amp;", "&"))
-tbl_title2genre_w_ids <- tbl_zenderschema.4 |> 
-  left_join(tbl_title2genre, by = join_by(titel_NL == pgm_title, genre_1 == pgm_genre))
+tbl_title2genre_w_ids_1 <- tbl_zenderschema.4 |> 
+  left_join(tbl_title2genre, by = join_by(titel_NL == pgm_title, genre_1 == pgm_genre)) |> filter(!is.na(pgm_title_to_genre_id))
+tbl_title2genre_w_ids_2 <- tbl_zenderschema.4 |> 
+  left_join(tbl_title2genre, by = join_by(titel_NL == pgm_title, genre_2 == pgm_genre)) |> filter(!is.na(pgm_title_to_genre_id))
+tbl_title2genre_w_ids_3 <- bind_rows(tbl_title2genre_w_ids_1, tbl_title2genre_w_ids_2) |> distinct()
+
+missing <- tbl_zenderschema.4 |> anti_join(tbl_title2genre_w_ids_3, by = join_by(moro_key == moro_key))
 
 # Cleanup
 dbDisconnect(con)
-# Kill the tunnel; find PID(s) of ssh tunnel on local port 3307
-pid <- system2("lsof", args = c("-ti", "tcp:3307"), stdout = TRUE)
+# Kill the tunnel; find PID(s) of ssh tunnel on local port
+pid <- system2("lsof", args = c("-ti", paste0("tcp:", env_db_port)), stdout = TRUE)
 
 if (length(pid) > 0) {
   system2("kill", pid)
