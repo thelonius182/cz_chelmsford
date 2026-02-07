@@ -1,6 +1,6 @@
 # prep moderooster en wp-gidsinfo tbv de koppeling met CPNM-id's
-pacman::p_load(tidyr, dplyr, stringr, readr, lubridate, fs, futile.logger, readxl, ssh, DBI,
-               purrr, httr, jsonlite, yaml, ssh, googledrive, keyring, openxlsx)
+pacman::p_load(tidyr, dplyr, stringr, readr, lubridate, fs, futile.logger, readxl, DBI,
+               purrr, httr, jsonlite, yaml, ssh, googledrive, openxlsx, glue, uuid)
 
 cz_extract_sheet <- function(ss_name, sheet_name) {
   read_xlsx(ss_name,
@@ -13,6 +13,38 @@ cz_get_url <- function(cz_ss) {
   
   # use [[ instead of $, because it is a variable, not a constant
   paste0("https://", config$url_pfx, config[[cz_url]]) 
+}
+
+# improve name for 'has non-zero number of characters'
+has_value <- function(x) nzchar(x)
+
+# Wait for tunnel to become available
+wait_for_tunnel <- function(t_host, t_port, total_timeout = 10) {
+  start <- Sys.time()
+  repeat {
+    con <- suppressWarnings(
+      try(
+        socketConnection(
+          host = t_host,
+          port = t_port,
+          open = "r",
+          timeout = 1
+        ),
+        silent = TRUE
+      )
+    )
+    
+    if (!inherits(con, "try-error")) {
+      close(con)
+      return(TRUE)
+    }
+    
+    if (as.numeric(difftime(Sys.time(), start, units = "secs")) > total_timeout) {
+      stop("Spinning up the SSH-tunnel failed.")
+    }
+    
+    Sys.sleep(0.2)
+  }
 }
 
 config <- read_yaml("config.yaml")
@@ -73,8 +105,7 @@ tbl_zenderschema.4 <- tbl_zenderschema.3 |> left_join(tbl_raw_wpgidsinfo, by = j
          afbeelding = feat_img_ids
          ) |> arrange(moro_key)
 
-# prepare config
-has_value <- function(x) nzchar(x)
+# prepare tunnel/database settings
 env_tun_auth <- Sys.getenv("CPNM_TUNNEL_AUTH_UBU")
 if (!has_value(env_tun_auth)) stop("Missing (Ubuntu-)authentication for SSH-tunnel to CPNM")
 env_tun_map <- Sys.getenv("CPNM_TUNNEL_MAPPING")
@@ -103,7 +134,9 @@ tunnel <- system2(
   wait = FALSE
 )
 
-# Connect to DB via tunnel
+wait_for_tunnel(env_db_host, env_db_port)
+
+# Use tunnel to connect to CPNM-database
 con <- dbConnect(
   drv = RMySQL::MySQL(),
   host = env_db_host,
@@ -125,13 +158,34 @@ tbl_title2genre <- tbl_title2genre_raw |> mutate(pgm_title = str_replace_all(pgm
 tbl_title2genre_w_ids_1 <- tbl_zenderschema.4 |> 
   left_join(tbl_title2genre, by = join_by(titel_NL == pgm_title, genre_1 == pgm_genre)) |> filter(!is.na(pgm_title_to_genre_id))
 tbl_title2genre_w_ids_2 <- tbl_zenderschema.4 |> 
-  left_join(tbl_title2genre, by = join_by(titel_NL == pgm_title, genre_2 == pgm_genre)) |> filter(!is.na(pgm_title_to_genre_id))
+  left_join(tbl_title2genre, by = join_by(titel_NL == pgm_title, genre_2 == pgm_genre)) |> filter(!is.na(pgm_title_to_genre_id)) |> 
+  anti_join(tbl_title2genre_w_ids_1, by = join_by(moro_key))
 tbl_title2genre_w_ids_3 <- bind_rows(tbl_title2genre_w_ids_1, tbl_title2genre_w_ids_2) |> distinct()
 
 missing <- tbl_zenderschema.4 |> anti_join(tbl_title2genre_w_ids_3, by = join_by(moro_key == moro_key))
 
+new_id <- UUIDgenerate(use.time = FALSE)  # v4
+new_parent_id = 'c7e836ce-d2ae-4bd2-a697-1a7466143620'
+source_id = '22d47aa0-0511-48c5-b98c-b69d59ff6157'
+sql <- glue_sql("
+INSERT INTO taxonomies (id, type, name, slug, description, meta,
+                        attributes, properties, parent_id,
+                        image_id, entry_id, site_id, user_id,
+                        legacy_id, legacy_type, legacy_data,
+                        created_at, updated_at, deleted_at)
+SELECT {new_id}, type, name, slug, description, meta,
+       attributes, properties, {new_parent_id},
+       image_id, entry_id, site_id, user_id,
+       legacy_id, legacy_type, legacy_data,
+       NOW(), NULL, NULL
+FROM taxonomies
+WHERE id = {source_id}
+", .con = con)
+dbExecute(con, sql)
+
 # Cleanup
 dbDisconnect(con)
+
 # Kill the tunnel; find PID(s) of ssh tunnel on local port
 pid <- system2("lsof", args = c("-ti", paste0("tcp:", env_db_port)), stdout = TRUE)
 
