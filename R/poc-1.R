@@ -165,16 +165,62 @@ tbl_title2genre_w_ids_3 <- bind_rows(tbl_title2genre_w_ids_1, tbl_title2genre_w_
 missing <- tbl_zenderschema.4 |> anti_join(tbl_title2genre_w_ids_3, by = join_by(moro_key == moro_key))
 
 new_id <- UUIDgenerate(use.time = FALSE)  # v4
-new_parent_id = 'c7e836ce-d2ae-4bd2-a697-1a7466143620'
-source_id = '22d47aa0-0511-48c5-b98c-b69d59ff6157'
+sql <- glue_sql("
+INSERT INTO taxonomies (
+  id, type, name, slug, description, meta, attributes, properties, parent_id, image_id, entry_id, site_id, user_id,
+  legacy_id, legacy_type, legacy_data, created_at, updated_at, deleted_at
+) values(
+  {new_id},
+  'creator',
+  JSON_OBJECT(
+    'en', 'inJazz',
+    'nl', 'inJazz'
+  ),
+  JSON_OBJECT(
+    'en', 'injazz',
+    'nl', 'injazz'
+  ),
+  NULL,
+  NULL,
+  NULL,
+  NULL,
+  'ec391f61-1016-4920-a04f-331f2c327c34',
+  NULL,
+  NULL,
+  1,
+  5,
+  0,
+  NULL,
+  NULL,
+  NOW(), 
+  NULL, 
+  NULL
+)
+", .con = con)
+dbExecute(con, sql)
+
+source_id = 'b41e3525-83ac-47d4-93dc-1dfa6ee1370c'
+new_id <- UUIDgenerate(use.time = FALSE)  # v4
+ed <- missing_editors$redacteurs[1]
+ed_slug <- str_remove_all(ed, "[.,!&:¡’]")
+ed_slug <- str_replace_all(ed_slug, " +", "-") |> str_to_lower()
 sql <- glue_sql("
 INSERT INTO taxonomies (id, type, name, slug, description, meta,
                         attributes, properties, parent_id,
                         image_id, entry_id, site_id, user_id,
                         legacy_id, legacy_type, legacy_data,
                         created_at, updated_at, deleted_at)
-SELECT {new_id}, type, name, slug, description, meta,
-       attributes, properties, {new_parent_id},
+SELECT {new_id}, type, 
+       JSON_OBJECT(
+         'en', {ed},
+         'nl', {ed}
+       ),
+       JSON_OBJECT(
+         'en', {ed_slug},
+         'nl', {ed_slug}
+       ),
+       description, meta,
+       attributes, properties, NULL,
        image_id, entry_id, site_id, user_id,
        legacy_id, legacy_type, legacy_data,
        NOW(), NULL, NULL
@@ -182,6 +228,16 @@ FROM taxonomies
 WHERE id = {source_id}
 ", .con = con)
 dbExecute(con, sql)
+
+query <- "select name->>'$.nl' as editor_name, id as editor_id from taxonomies 
+where legacy_type = 'programma_maker' or legacy_type is null
+order by 1
+;"
+editor_df <- dbGetQuery(con, query)
+tbl_title2genre_w_ids_4 <- tbl_title2genre_w_ids_3 |> 
+  left_join(editor_df, by = join_by("redacteurs" == "editor_name"))
+  
+missing_editors <- tbl_title2genre_w_ids_4 |> filter(is.na(editor_id))
 
 # Cleanup
 dbDisconnect(con)
