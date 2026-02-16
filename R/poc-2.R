@@ -67,7 +67,7 @@ tbl_raw_zenderschema <- cz_extract_sheet(path_roosters, sheet_name = paste0("mod
 tbl_raw_wpgidsinfo <- cz_extract_sheet(path_wp_gidsinfo, sheet_name = "gids-info")
 
 # zenderschema ------------------------------------------------------------
-  tbl_zenderschema.1 <- tbl_raw_zenderschema |> 
+tbl_zenderschema.1 <- tbl_raw_zenderschema |> 
   mutate(start = str_pad(string = start, side = "left", width = 5, pad = "0"), 
          slot = paste0(str_sub(dag, start = 1, end = 2), start)
   ) |> 
@@ -103,7 +103,7 @@ tbl_zenderschema.4 <- tbl_zenderschema.3 |> left_join(tbl_raw_wpgidsinfo, by = j
          intro_NL = `std.samenvatting-NL`,
          intro_EN = `std.samenvatting-EN`,
          afbeelding = feat_img_ids
-         ) |> arrange(moro_key)
+  ) |> arrange(moro_key)
 
 # prepare tunnel/database settings
 env_tun_auth <- Sys.getenv("CPNM_TUNNEL_AUTH_UBU")
@@ -146,142 +146,83 @@ con <- dbConnect(
   dbname = env_db_name
 )
 
-# ... run queries ...
-query <- "select t1.name->>'$.nl' as pgm_title, t2.name->>'$.nl' as pgm_genre, t1.id as pgm_title_to_genre_id
-from taxonomies t1 join taxonomies t2 on t1.parent_id = t2.id
-where t1.parent_id is not null
-  and t1.type = 'subgenre' 
-  and t2.type = 'genre'
-;"
-tbl_title2genre_raw <- dbGetQuery(con, query)
-tbl_title2genre <- tbl_title2genre_raw |> mutate(pgm_title = str_replace_all(pgm_title, "&amp;", "&"))
-tbl_title2genre_w_ids_1 <- tbl_zenderschema.4 |> 
-  left_join(tbl_title2genre, by = join_by(titel_NL == pgm_title, genre_1 == pgm_genre)) |> filter(!is.na(pgm_title_to_genre_id))
-tbl_title2genre_w_ids_2 <- tbl_zenderschema.4 |> 
-  left_join(tbl_title2genre, by = join_by(titel_NL == pgm_title, genre_2 == pgm_genre)) |> filter(!is.na(pgm_title_to_genre_id)) |> 
-  anti_join(tbl_title2genre_w_ids_1, by = join_by(moro_key))
-tbl_title2genre_w_ids_3 <- bind_rows(tbl_title2genre_w_ids_1, tbl_title2genre_w_ids_2) |> distinct()
-
-missing <- tbl_zenderschema.4 |> anti_join(tbl_title2genre_w_ids_3, by = join_by(moro_key))
-
-new_id <- UUIDgenerate(use.time = FALSE)  # v4
-sql <- glue_sql("
-INSERT INTO taxonomies (
-  id, type, name, slug, description, meta, attributes, properties, parent_id, image_id, entry_id, site_id, user_id,
-  legacy_id, legacy_type, legacy_data, created_at, updated_at, deleted_at
-) values(
-  {new_id},
-  'creator',
-  JSON_OBJECT(
-    'en', 'inJazz',
-    'nl', 'inJazz'
-  ),
-  JSON_OBJECT(
-    'en', 'injazz',
-    'nl', 'injazz'
-  ),
-  NULL,
-  NULL,
-  NULL,
-  NULL,
-  'ec391f61-1016-4920-a04f-331f2c327c34',
-  NULL,
-  NULL,
-  1,
-  5,
-  0,
-  NULL,
-  NULL,
-  NOW(), 
-  NULL, 
-  NULL
-)
-", .con = con)
-dbExecute(con, sql)
-
-source_id = 'b41e3525-83ac-47d4-93dc-1dfa6ee1370c'
-new_id <- UUIDgenerate(use.time = FALSE)  # v4
-ed <- missing_editors$redacteurs[1]
-ed_slug <- str_remove_all(ed, "[.,!&:¡’]")
-ed_slug <- str_replace_all(ed_slug, " +", "-") |> str_to_lower()
-sql <- glue_sql("
-INSERT INTO taxonomies (id, type, name, slug, description, meta,
-                        attributes, properties, parent_id,
-                        image_id, entry_id, site_id, user_id,
-                        legacy_id, legacy_type, legacy_data,
-                        created_at, updated_at, deleted_at)
-SELECT {new_id}, type, 
-       JSON_OBJECT(
-         'en', {ed},
-         'nl', {ed}
-       ),
-       JSON_OBJECT(
-         'en', {ed_slug},
-         'nl', {ed_slug}
-       ),
-       description, meta,
-       attributes, properties, NULL,
-       image_id, entry_id, site_id, user_id,
-       legacy_id, legacy_type, legacy_data,
-       NOW(), NULL, NULL
-FROM taxonomies
-WHERE id = {source_id}
-", .con = con)
-dbExecute(con, sql)
-
-query <- "WITH ranked AS (
-  SELECT distinct
-    p.id              AS pgm_id,
-    p.title->>'$.nl'  AS pgm_title_nl,
-    ty.id             AS genre_id,
-    ty.name->>'$.nl'  AS genre_name_nl,
-    ROW_NUMBER() OVER (
-      PARTITION BY p.id
-      ORDER BY ty.id
-    ) AS rn
-  FROM entries AS p
-  JOIN taxonomables AS ta
-    ON ta.taxonomable_id = p.id
-  JOIN taxonomies AS ty
-    ON ty.id = ta.taxonomy_id
-   AND ty.type = 'genre'
-  WHERE p.type = 'program'
-    and ty.id != 'f0f77a5b-ac0e-4e92-b143-5917223acc7a' -- Algemeen overslaan
-    -- AND REGEXP_LIKE(p.title->>'$.nl', 'dreamscenes', 'i')
-)
-SELECT
-  pgm_id,
-  pgm_title_nl,
-  MAX(CASE WHEN rn = 1 THEN genre_id END)       AS genre_id_1,
-  MAX(CASE WHEN rn = 1 THEN genre_name_nl END)  AS genre_name_nl_1,
-  MAX(CASE WHEN rn = 2 THEN genre_id END)       AS genre_id_2,
-  MAX(CASE WHEN rn = 2 THEN genre_name_nl END)  AS genre_name_nl_2
-FROM ranked
-WHERE rn <= 2
-GROUP BY pgm_id, pgm_title_nl
-order by pgm_title_nl
-;
-"
-pgm_genres_raw <- dbGetQuery(con, query)
-pgm_genres_df <- pgm_genres_raw |> mutate(pgm_title_nl = str_replace_all(pgm_title_nl, "&amp;", "&"),
-                                          genre_id_2 = if_else(genre_id_2 != genre_id_1, genre_id_2, NA_character_),
-                                          genre_name_nl_2 = if_else(genre_id_2 != genre_id_1, genre_name_nl_2, NA_character_))
-tbl_title2genre_w_ids_5 <- tbl_zenderschema.4 |> 
-  # left_join(pgm_genres_df, by = join_by(titel_NL == pgm_title_nl, genre_1 == genre_name_nl_1), relationship = "many-to-many") |> 
-  left_join(pgm_genres_df, by = join_by(titel_NL == pgm_title_nl), relationship = "many-to-many") |> 
-  group_by(moro_key) |> mutate(n_dup_keys = n()) |> ungroup()
-
-dup_keys <- tbl_title2genre_w_ids_5 |> filter(n_dup_keys > 1) |> nrow()
-
-query <- "select name->>'$.nl' as editor_name, id as editor_id from taxonomies 
-where legacy_type = 'programma_maker' or legacy_type is null
-order by 1
-;"
-editor_df <- dbGetQuery(con, query)
-tbl_title2genre_w_ids_6 <- tbl_title2genre_w_ids_5 |> 
-  left_join(editor_df, by = join_by("redacteurs" == "editor_name"))
-
-missing_editors <- tbl_title2genre_w_ids_4 |> filter(is.na(editor_id))
+repeat {
+  # ... run queries ...
+  query <- "select t1.name->>'$.nl' as pgm_title, t2.name->>'$.nl' as pgm_genre, t1.id as pgm_title_to_genre_id
+            from taxonomies t1 join taxonomies t2 on t1.parent_id = t2.id
+            where t1.parent_id is not null
+              and t1.type = 'subgenre' 
+              and t2.type = 'genre'
+            ;"
+  tbl_title2genre_raw <- dbGetQuery(con, query)
+  tbl_title2genre <- tbl_title2genre_raw |> mutate(pgm_title = str_replace_all(pgm_title, "&amp;", "&"))
+  tbl_title2genre_w_ids_1 <- tbl_zenderschema.4 |> 
+    left_join(tbl_title2genre, by = join_by(titel_NL == pgm_title, genre_1 == pgm_genre)) |> filter(!is.na(pgm_title_to_genre_id))
+  tbl_title2genre_w_ids_2 <- tbl_zenderschema.4 |> 
+    left_join(tbl_title2genre, by = join_by(titel_NL == pgm_title, genre_2 == pgm_genre)) |> filter(!is.na(pgm_title_to_genre_id)) |> 
+    anti_join(tbl_title2genre_w_ids_1, by = join_by(moro_key))
+  tbl_title2genre_w_ids_3 <- bind_rows(tbl_title2genre_w_ids_1, tbl_title2genre_w_ids_2) |> distinct()
+  
+  missing <- tbl_zenderschema.4 |> anti_join(tbl_title2genre_w_ids_3, by = join_by(moro_key)) |> nrow()
+  
+  if (missing > 0) {
+    
+  }
+  
+  query <- "WITH ranked AS (
+               SELECT distinct
+                 p.id              AS pgm_id,
+                 p.title->>'$.nl'  AS pgm_title_nl,
+                 ty.id             AS genre_id,
+                 ty.name->>'$.nl'  AS genre_name_nl,
+                 ROW_NUMBER() OVER (
+                   PARTITION BY p.id
+                   ORDER BY ty.id
+                 ) AS rn
+               FROM entries AS p
+               JOIN taxonomables AS ta
+                 ON ta.taxonomable_id = p.id
+               JOIN taxonomies AS ty
+                 ON ty.id = ta.taxonomy_id
+                AND ty.type = 'genre'
+               WHERE p.type = 'program'
+                 and ty.id != 'f0f77a5b-ac0e-4e92-b143-5917223acc7a' -- 'Algemeen' overslaan
+            )
+            SELECT
+              pgm_id,
+              pgm_title_nl,
+              MAX(CASE WHEN rn = 1 THEN genre_id END)       AS genre_id_1,
+              MAX(CASE WHEN rn = 1 THEN genre_name_nl END)  AS genre_name_nl_1,
+              MAX(CASE WHEN rn = 2 THEN genre_id END)       AS genre_id_2,
+              MAX(CASE WHEN rn = 2 THEN genre_name_nl END)  AS genre_name_nl_2
+            FROM ranked
+            WHERE rn <= 2
+            GROUP BY pgm_id, pgm_title_nl
+            order by pgm_title_nl
+            ;"
+  
+  pgm_genres_raw <- dbGetQuery(con, query)
+  pgm_genres_df <- pgm_genres_raw |> mutate(pgm_title_nl = str_replace_all(pgm_title_nl, "&amp;", "&"),
+                                            genre_id_2 = if_else(genre_id_2 != genre_id_1, genre_id_2, NA_character_),
+                                            genre_name_nl_2 = if_else(genre_id_2 != genre_id_1, genre_name_nl_2, NA_character_))
+  tbl_title2genre_w_ids_4 <- tbl_zenderschema.4 |> 
+    # left_join(pgm_genres_df, by = join_by(titel_NL == pgm_title_nl, genre_1 == genre_name_nl_1), relationship = "many-to-many") |> 
+    left_join(pgm_genres_df, by = join_by(titel_NL == pgm_title_nl), relationship = "many-to-many") |> 
+    group_by(moro_key) |> mutate(n_dup_keys = n()) |> ungroup()
+  
+  dup_keys <- tbl_title2genre_w_ids_4 |> filter(n_dup_keys > 1) |> nrow()
+  
+  query <- "select name->>'$.nl' as editor_name, id as editor_id from taxonomies 
+            where legacy_type = 'programma_maker' or legacy_type is null
+            order by 1
+            ;"
+  editor_df <- dbGetQuery(con, query)
+  tbl_title2genre_w_ids_5 <- tbl_title2genre_w_ids_4 |> 
+    left_join(editor_df, by = join_by("redacteurs" == "editor_name"))
+  
+  missing_editors <- tbl_title2genre_w_ids_5 |> filter(is.na(editor_id))
+  break
+}
 
 # Cleanup
 dbDisconnect(con)
