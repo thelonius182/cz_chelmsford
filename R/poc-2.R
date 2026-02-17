@@ -1,6 +1,6 @@
 # prep moderooster en wp-gidsinfo tbv de koppeling met CPNM-id's
 pacman::p_load(tidyr, dplyr, stringr, readr, lubridate, fs, futile.logger, readxl, DBI,
-               purrr, httr, jsonlite, yaml, ssh, googledrive, openxlsx, glue, uuid)
+               purrr, httr, jsonlite, yaml, ssh, googledrive, openxlsx, glue, uuid, RMariaDB)
 
 cz_extract_sheet <- function(ss_name, sheet_name) {
   read_xlsx(ss_name,
@@ -103,7 +103,7 @@ tbl_zenderschema.4 <- tbl_zenderschema.3 |> left_join(tbl_raw_wpgidsinfo, by = j
          intro_NL = `std.samenvatting-NL`,
          intro_EN = `std.samenvatting-EN`,
          afbeelding = feat_img_ids
-  ) |> arrange(moro_key)
+  ) |> pivot_longer(cols = c(genre_1, genre_2), names_to = NULL, values_to = "genre", values_drop_na = TRUE) |> arrange(moro_key)
 
 # prepare tunnel/database settings
 env_tun_auth <- Sys.getenv("CPNM_TUNNEL_AUTH_UBU")
@@ -138,7 +138,7 @@ wait_for_tunnel(env_db_host, env_db_port)
 
 # Use tunnel to connect to CPNM-database
 con <- dbConnect(
-  drv = RMySQL::MySQL(),
+  drv = RMariaDB::MariaDB(),
   host = env_db_host,
   port = as.integer(env_db_port),
   user = env_db_user,
@@ -166,7 +166,8 @@ repeat {
   missing <- tbl_zenderschema.4 |> anti_join(tbl_title2genre_w_ids_3, by = join_by(moro_key)) |> nrow()
   
   if (missing > 0) {
-    
+    print("tbl_title2genre_w_ids_3 is incomplete; quiting this job.")
+    break
   }
   
   query <- "WITH ranked AS (
@@ -221,6 +222,19 @@ repeat {
     left_join(editor_df, by = join_by("redacteurs" == "editor_name"))
   
   missing_editors <- tbl_title2genre_w_ids_5 |> filter(is.na(editor_id))
+  
+  query <- "select t1.name->>'$.nl' as ty_pgm_title_NL, 
+                   t1.name as ty_pgm_title, 
+                   t1.slug as ty_pgm_slug, 
+                   t1.id as ty_id, 
+                   t2.name as genre_name
+            from taxonomies t1 join taxonomies t2 on t2.id = t1.parent_id
+            where t1.type = 'subgenre' and t1.parent_id is not null order by 1;"
+  ty_subgenres_raw <- dbGetQuery(con, query)
+  ty_subgenres <- ty_subgenres_raw |> mutate(ty_pgm_title_NL = str_replace(ty_pgm_title_NL, "&amp;", "&"))
+  tbl_title2genre_w_ids_6 <- tbl_title2genre_w_ids_5 |> 
+    left_join(ty_subgenres, by = join_by(titel_NL == ty_pgm_title_NL), relationship = "many-to-many")
+  
   break
 }
 
