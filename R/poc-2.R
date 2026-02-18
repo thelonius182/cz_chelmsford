@@ -148,22 +148,35 @@ con <- dbConnect(
 
 repeat {
   # ... run queries ...
-  query <- "select t1.name->>'$.nl' as pgm_title, t2.name->>'$.nl' as pgm_genre, t1.id as pgm_title_to_genre_id
-            from taxonomies t1 join taxonomies t2 on t1.parent_id = t2.id
-            where t1.parent_id is not null
-              and t1.type = 'subgenre' 
-              and t2.type = 'genre'
-            ;"
-  tbl_title2genre_raw <- dbGetQuery(con, query)
-  tbl_title2genre <- tbl_title2genre_raw |> mutate(pgm_title = str_replace_all(pgm_title, "&amp;", "&"))
-  tbl_title2genre_w_ids_1 <- tbl_zenderschema.4 |> 
-    left_join(tbl_title2genre, by = join_by(titel_NL == pgm_title, genre_1 == pgm_genre)) |> filter(!is.na(pgm_title_to_genre_id))
-  tbl_title2genre_w_ids_2 <- tbl_zenderschema.4 |> 
-    left_join(tbl_title2genre, by = join_by(titel_NL == pgm_title, genre_2 == pgm_genre)) |> filter(!is.na(pgm_title_to_genre_id)) |> 
-    anti_join(tbl_title2genre_w_ids_1, by = join_by(moro_key))
-  tbl_title2genre_w_ids_3 <- bind_rows(tbl_title2genre_w_ids_1, tbl_title2genre_w_ids_2) |> distinct()
+  query <- "select t1.name->>'$.nl' as ty_pgm_title_NL, 
+                   t1.id as ty_pgm_title_id, 
+                   t2.name->>'$.nl' as ty_genre_NL,
+                   t2.id as ty_genre_id,
+                   t1.name as ty_pgm_title_json, 
+                   t1.slug as ty_pgm_slug_json
+            from taxonomies t1 join taxonomies t2 on t2.id = t1.parent_id
+            where t1.type = 'subgenre' and t1.parent_id is not null order by 1;"
+  ty_subgenres_raw <- dbGetQuery(con, query)
+  ty_subgenres <- ty_subgenres_raw |> mutate(ty_pgm_title_NL = str_replace(ty_pgm_title_NL, "&amp;", "&"))
   
-  missing <- tbl_zenderschema.4 |> anti_join(tbl_title2genre_w_ids_3, by = join_by(moro_key)) |> nrow()
+  # query <- "select t1.name->>'$.nl' as pgm_title, t2.name->>'$.nl' as pgm_genre, t1.id as pgm_title_to_genre_id
+  #           from taxonomies t1 join taxonomies t2 on t1.parent_id = t2.id
+  #           where t1.parent_id is not null
+  #             and t1.type = 'subgenre' 
+  #             and t2.type = 'genre'
+  #           ;"
+  # tbl_title2genre_raw <- dbGetQuery(con, query)
+  # tbl_title2genre <- tbl_title2genre_raw |> mutate(pgm_title = str_replace_all(pgm_title, "&amp;", "&"))
+
+  tbl_title2genre_w_ids_1 <- tbl_zenderschema.4 |> 
+    left_join(ty_subgenres, by = join_by(titel_NL == ty_pgm_title_NL, genre == ty_genre_NL)) # |> filter(!is.na(pgm_title_to_genre_id))
+  
+  # tbl_title2genre_w_ids_2 <- tbl_zenderschema.4 |> 
+  #   left_join(tbl_title2genre, by = join_by(titel_NL == pgm_title, genre_2 == pgm_genre)) |> filter(!is.na(pgm_title_to_genre_id)) |> 
+  #   anti_join(tbl_title2genre_w_ids_1, by = join_by(moro_key))
+  # tbl_title2genre_w_ids_3 <- bind_rows(tbl_title2genre_w_ids_1, tbl_title2genre_w_ids_2) |> distinct()
+  
+  tbl_title2genre_w_ids_1_missing <- tbl_title2genre_w_ids_1 |> filter(is.na(ty_genre_id))
   
   if (missing > 0) {
     print("tbl_title2genre_w_ids_3 is incomplete; quiting this job.")
@@ -223,15 +236,6 @@ repeat {
   
   missing_editors <- tbl_title2genre_w_ids_5 |> filter(is.na(editor_id))
   
-  query <- "select t1.name->>'$.nl' as ty_pgm_title_NL, 
-                   t1.name as ty_pgm_title, 
-                   t1.slug as ty_pgm_slug, 
-                   t1.id as ty_id, 
-                   t2.name as genre_name
-            from taxonomies t1 join taxonomies t2 on t2.id = t1.parent_id
-            where t1.type = 'subgenre' and t1.parent_id is not null order by 1;"
-  ty_subgenres_raw <- dbGetQuery(con, query)
-  ty_subgenres <- ty_subgenres_raw |> mutate(ty_pgm_title_NL = str_replace(ty_pgm_title_NL, "&amp;", "&"))
   tbl_title2genre_w_ids_6 <- tbl_title2genre_w_ids_5 |> 
     left_join(ty_subgenres, by = join_by(titel_NL == ty_pgm_title_NL), relationship = "many-to-many")
   
