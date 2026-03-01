@@ -1,53 +1,9 @@
-# prep moderooster en wp-gidsinfo tbv de koppeling met CPNM-id's
+# prep modelrooster en wp-gidsinfo tbv de koppeling met CPNM-id's
 pacman::p_load(tidyr, dplyr, stringr, readr, lubridate, fs, futile.logger, readxl, DBI,
                purrr, httr, jsonlite, yaml, ssh, googledrive, openxlsx, glue, uuid, RMariaDB)
 
-cz_extract_sheet <- function(ss_name, sheet_name) {
-  read_xlsx(ss_name,
-            sheet = sheet_name,
-            .name_repair = ~ ifelse(nzchar(.x), .x, LETTERS[seq_along(.x)]))
-}
-
-cz_get_url <- function(cz_ss) {
-  cz_url <- paste0("url_", cz_ss)
-  
-  # use [[ instead of $, because it is a variable, not a constant
-  paste0("https://", config$url_pfx, config[[cz_url]]) 
-}
-
-# improve name for 'has non-zero number of characters'
-has_value <- function(x) nzchar(x)
-
-# Wait for tunnel to become available
-wait_for_tunnel <- function(t_host, t_port, total_timeout = 10) {
-  start <- Sys.time()
-  repeat {
-    con <- suppressWarnings(
-      try(
-        socketConnection(
-          host = t_host,
-          port = t_port,
-          open = "r",
-          timeout = 1
-        ),
-        silent = TRUE
-      )
-    )
-    
-    if (!inherits(con, "try-error")) {
-      close(con)
-      return(TRUE)
-    }
-    
-    if (as.numeric(difftime(Sys.time(), start, units = "secs")) > total_timeout) {
-      stop("Spinning up the SSH-tunnel failed.")
-    }
-    
-    Sys.sleep(0.2)
-  }
-}
-
 config <- read_yaml("config.yaml")
+source("R/custom_functions.R", encoding = "UTF-8")
 
 # downloads GD ------------------------------------------------------------
 
@@ -94,6 +50,7 @@ tbl_zenderschema.3 <- tbl_zenderschema.2 |>
 
 tbl_zenderschema.4 <- tbl_zenderschema.3 |> left_join(tbl_raw_wpgidsinfo, by = join_by(titel == `key-modelrooster`)) |> 
   select(moro_key = titel,
+         woj_bcid,
          titel_NL = `titel-NL`,
          titel_EN = `titel-EN`,
          productie = `productie-1-taak`,
@@ -187,24 +144,28 @@ repeat {
   }
   
   query <- "with ds1 as (
-   select pgms.title->>'$.nl' as pgm_title_NL, 
-          pgms.id as pgm_id,
-          count(*) as n_episodes
-   from entries pgms join entries epis on epis.parent_id = pgms.id
-   where pgms.type = 'program'
-     and epis.type = 'episode'
-   group by pgms.title->>'$.nl',
-            pgms.id
+   select replace(pgms.title->>'$.nl', '&amp;', '&') as pgm_title_NL, 
+          pgms.id as pgm_id
+   from entries pgms left join entries epis on epis.parent_id = pgms.id
+                                           and pgms.type = 'program'
+                                           and epis.type = 'episode'
+   where length(pgms.title->>'$.nl') > 0
    ), ds2 as (
+   select pgm_title_NL, pgm_id, count(*) as n_episodes 
+   from ds1
+   group by pgm_title_NL,
+            pgm_id
+   ), ds3 as (
    select pgm_title_NL, 
           pgm_id, n_episodes,
           ROW_NUMBER() OVER (PARTITION BY pgm_title_NL
                              ORDER BY n_episodes desc) AS rn
-   from ds1
+   from ds2
    )
-   select * from ds2 where rn = 1 order by 1;"
-  program_titles_raw <- dbGetQuery(con, query) |> select(pgm_title_NL, pgm_id)
-  program_titles <- program_titles_raw |> mutate(pgm_title_NL = str_replace_all(pgm_title_NL, "&amp;", "&"))
+   select * from ds3  where rn = 1 
+   order by 1;"
+  program_titles <- dbGetQuery(con, query) |> select(pgm_title_NL, pgm_id)
+  # program_titles <- program_titles_raw |> mutate(pgm_title_NL = str_replace_all(pgm_title_NL, "&amp;", "&"))
   tbl_w_ids_3 <- tbl_w_ids_2 |> 
     left_join(program_titles, by = join_by("titel_NL" == "pgm_title_NL"), relationship = "many-to-many")
   
@@ -228,5 +189,3 @@ pid <- system2("lsof", args = c("-ti", paste0("tcp:", env_db_port)), stdout = TR
 if (length(pid) > 0) {
   system2("kill", pid)
 }  
-
-
