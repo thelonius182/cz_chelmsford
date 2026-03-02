@@ -51,17 +51,17 @@ ins_cpnm_pgm <- function(pm_title_NL,
                          pm_descr_EN,
                          pm_cpnm_db) {
   new_id <- UUIDgenerate(use.time = FALSE)  # v4
-  sql_stmt <- glue_sql("INSERT INTO `entries` (
-    `id`,
-    `type`,
-    `title`,
-    `slug`,
-    `description`,
-    `duration`,
-    `order`,
-    `site_id`,
-    `user_id`,
-    `created_at`
+  sql_stmt <- glue_sql("INSERT INTO entries (
+    id,
+    type,
+    title,
+    slug,
+    description,
+    duration,
+    order,
+    site_id,
+    user_id,
+    created_at
      )
      VALUES (
          {new_id},
@@ -81,6 +81,114 @@ ins_cpnm_pgm <- function(pm_title_NL,
   dbExecute(pm_cpnm_db, sql_stmt)
 }
 
+ins_cpnm_editor <- function(pm_name_NL, 
+                            pm_name_EN, 
+                            pm_slug_NL, 
+                            pm_slug_EN, 
+                            pm_cpnm_db) {
+  new_id <- UUIDgenerate(use.time = FALSE)  # v4
+  sql_stmt <- glue_sql("INSERT INTO taxonomies (
+       id,
+       type,
+       name,
+       slug,
+       site_id,
+       user_id,
+       legacy_type,
+       created_at
+     )
+     VALUES (
+         {new_id},
+         'creator',
+         JSON_OBJECT('nl', {pm_name_NL},
+                     'en', {pm_name_EN}),
+         JSON_OBJECT('nl', {pm_slug_NL},
+                     'en', {pm_slug_EN}),
+         1,                                      -- site_id
+         5,                                      -- user_id LvdA
+         'programma_maker',                      -- legacy type
+         NOW()                                   -- created_at
+     );", .con = pm_cpnm_db)
+  dbExecute(pm_cpnm_db, sql_stmt)
+}
+
+
+ins_cpnm_episode <- function(pm_pgm_id, 
+                             pm_editor_id, 
+                             pm_slug_EN, 
+                             pm_descr_NL,
+                             pm_descr_EN,
+                             pm_cpnm_db) {
+  new_id <- UUIDgenerate(use.time = FALSE)  # v4
+  sql_stmt <- glue_sql("INSERT INTO entries (
+    id,
+    type,
+    surtitle,
+    title,
+    subtitle,
+    slug,
+    description,
+    content,
+    blocks,
+    sections,
+    dates,
+    attributes,
+    properties,
+    playlist,
+    duration,
+    order,
+    parent_id,
+    image_id,
+    media_id,
+    site_id,
+    user_id,
+    legacy_id,
+    legacy_type,
+    legacy_data,
+    published_at,
+    created_at,
+    updated_at,
+    deleted_at
+)
+VALUES (
+    UUID(),
+    'default',
+
+    NULL,                                   -- surtitle (JSON)
+    JSON_OBJECT('en', 'Main title'),        -- title (required JSON)
+    NULL,                                   -- subtitle
+    JSON_OBJECT('en', 'my-slug'),           -- slug
+    NULL,                                   -- description
+    NULL,                                   -- content
+    NULL,                                   -- blocks
+    NULL,                                   -- sections
+    NULL,                                   -- dates
+    NULL,                                   -- attributes
+    NULL,                                   -- properties
+    NULL,                                   -- playlist
+
+    0,                                      -- duration
+    0,                                      -- order
+
+    NULL,                                   -- parent_id
+    NULL,                                   -- image_id
+    NULL,                                   -- media_id
+
+    1,                                      -- site_id
+    1,                                      -- user_id
+
+    NULL,                                   -- legacy_id
+    NULL,                                   -- legacy_type
+    NULL,                                   -- legacy_data
+
+    NOW(),                                  -- published_at
+    NOW(),                                  -- created_at
+    NOW(),                                  -- updated_at
+    NULL                                    -- deleted_at
+);", .con = pm_cpnm_db)
+dbExecute(pm_cpnm_db, sql_stmt)
+}
+
 add_bc_cols <- function(data, ts_col, tz = "Europe/Amsterdam") {
   ts_col <- rlang::ensym(ts_col)
   
@@ -94,4 +202,12 @@ add_bc_cols <- function(data, ts_col, tz = "Europe/Amsterdam") {
       bc_hour_start = hour(.ts_amsterdam),
       .ts_amsterdam = NULL
     )
+}
+
+as_slug <- function(pm_str) {
+  s1 <- str_replace_all(pm_str, "[^- [:word:]]", "")
+  s1 <- str_trim(string = s1, side = "both")
+  s1 <- str_replace_all(s1, " +", "-")
+  s1 <- str_replace_all(s1, "-+", "-") |> str_to_lower()
+  stringi::stri_trans_general(s1, "Latin-ASCII")
 }

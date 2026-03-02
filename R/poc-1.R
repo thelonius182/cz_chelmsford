@@ -292,3 +292,4 @@ pid <- system2("lsof", args = c("-ti", paste0("tcp:", env_db_port)), stdout = TR
 if (length(pid) > 0) {
   system2("kill", pid)
 }  
+

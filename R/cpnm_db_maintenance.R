@@ -7,3 +7,9 @@ ins_result <-
                pm_descr_NL = "Geniet van live electronische en electro-akoestische muziek, vanuit de redactie van de Concertzender, of elders",
                pm_descr_EN = "Enjoy live electronic and electro-acoustic music, from the office of the Concertzender, or elsewhere",
                pm_cpnm_db = con)
+
+ins_cpnm_editor(pm_name_NL = 'Hans Mantel en Rembrandt Frerichs',
+                pm_name_EN = 'Hans Mantel en Rembrandt Frerichs',
+                pm_slug_NL = 'hans-mantel-en-rembrandt-frerichs',
+                pm_slug_EN = 'hans-mantel-en-rembrandt-frerichs',
+                pm_cpnm_db = con)
