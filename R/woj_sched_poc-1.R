@@ -84,7 +84,6 @@ repeat {
             ;"
   
   ty_genres <- dbGetQuery(con, query)
-  
   woj_schedule_w_ids.3 <- woj_schedule_w_ids.2 |> left_join(ty_genres, by = join_by(genre == genre_NL))
   woj_schedule_w_ids_missing <- woj_schedule_w_ids.3 |> filter(is.na(ty_genre_id))
   
@@ -103,7 +102,6 @@ repeat {
   ty_editors <- dbGetQuery(con, query)
   woj_schedule_w_ids.4 <- woj_schedule_w_ids.3 |> 
     left_join(ty_editors, by = join_by("redacteurs" == "editor_name"))
-  
   woj_schedule_w_ids_missing <- woj_schedule_w_ids.4 |> filter(is.na(ty_editor_id)) |> select(redacteurs) |> distinct()
   
   if (nrow(woj_schedule_w_ids_missing) > 0) {
@@ -133,14 +131,20 @@ repeat {
    select * from ds3  where rn = 1 
    order by 1;"
   program_titles <- dbGetQuery(con, query) |> select(pgm_title_NL, pgm_id)
-  # program_titles <- program_titles_raw |> mutate(pgm_title_NL = str_replace_all(pgm_title_NL, "&amp;", "&"))
   woj_schedule_w_ids.5 <- woj_schedule_w_ids.4 |> 
     left_join(program_titles, by = join_by("titel_NL" == "pgm_title_NL"), relationship = "many-to-many")
-  
   woj_schedule_w_ids_missing <- woj_schedule_w_ids.5 |> filter(is.na(pgm_id))
   
   if (nrow(woj_schedule_w_ids_missing) > 0) {
-    print("programs missing in 'entries'-table; quiting this job.")
+    print("programs missing in 'entries'; quiting this job.")
+    break
+  }
+  
+  wi_tot_minutes <- woj_schedule_w_ids.5 |> distinct(bc_start, minutes) |> mutate(total_minutes = sum(minutes)) |> 
+    head(1) |> select(total_minutes) |> pull()
+  
+  if (wi_tot_minutes != 10080L) {
+    print(str_glue("woj_schedule: expected 10080 minutes, but got {wi_tot_minutes}; quiting this job."))
     break
   }
   
