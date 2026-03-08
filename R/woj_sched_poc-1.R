@@ -96,12 +96,12 @@ repeat {
   query <- "select name->>'$.nl' as editor_name, 
                    id as ty_editor_id
             from taxonomies 
-            where legacy_type = 'programma_maker'
+            where type = 'colofon'
             order by 1
             ;"
   ty_editors <- dbGetQuery(con, query)
   woj_schedule_w_ids.4 <- woj_schedule_w_ids.3 |> 
-    left_join(ty_editors, by = join_by("redacteurs" == "editor_name"))
+    left_join(ty_editors, by = join_by("redacteurs" == "editor_name"), relationship = "many-to-many")
   woj_schedule_w_ids_missing <- woj_schedule_w_ids.4 |> filter(is.na(ty_editor_id)) |> select(redacteurs) |> distinct()
   
   if (nrow(woj_schedule_w_ids_missing) > 0) {

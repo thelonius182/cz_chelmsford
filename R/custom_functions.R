@@ -92,24 +92,30 @@ ins_cpnm_editor <- function(pm_name_NL,
        slug,
        site_id,
        user_id,
-       legacy_type,
        created_at
      )
      VALUES (
          {new_id},
-         'creator',
+         'colofon',
          JSON_OBJECT('nl', {pm_name_NL},
                      'en', {pm_name_NL}),
          JSON_OBJECT('nl', {ed_name_slug},
                      'en', {ed_name_slug}),
          1,                                      -- site_id
          5,                                      -- user_id LvdA
-         'programma_maker',                      -- legacy type
          NOW()                                   -- created_at
      );", .con = pm_cpnm_db)
   dbExecute(pm_cpnm_db, sql_stmt)
 }
 
+upd_cpnm_pgm <- function(pm_pgm_id,
+                         pm_cpnm_db) {
+  sql_stmt <- glue_sql("update entries set 
+                          title = json_object('nl´, ),
+                          slug = json_object()
+                          description = json_object()
+                        where id = {pm_pgm_id};")
+}
 
 ins_cpnm_episode <- function(pm_pgm_id, 
                              pm_editor_id, 

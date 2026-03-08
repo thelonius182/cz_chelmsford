@@ -91,14 +91,14 @@ repeat {
   query <- "select name->>'$.nl' as editor_name, 
                    id as ty_editor_id 
             from taxonomies 
-            where legacy_type = 'programma_maker' or legacy_type is null
+            where type = 'colofon'
             order by 1
             ;"
   ty_editors <- dbGetQuery(con, query)
   tbl_w_ids_2 <- tbl_w_ids_1 |> 
     left_join(ty_editors, by = join_by("redacteurs" == "editor_name"))
   
-  tbl_w_ids_2_missing <- tbl_w_ids_2 |> filter(is.na(ty_editor_id))
+  tbl_w_ids_2_missing <- tbl_w_ids_2 |> filter(is.na(ty_editor_id)) |> select(redacteurs) |> distinct()
   
   if (nrow(tbl_w_ids_2_missing) > 0) {
     print("editors missing in the taxonomy; quiting this job.")
@@ -129,7 +129,7 @@ repeat {
   program_titles <- dbGetQuery(con, query) |> select(pgm_title_NL, pgm_id)
   # program_titles <- program_titles_raw |> mutate(pgm_title_NL = str_replace_all(pgm_title_NL, "&amp;", "&"))
   tbl_w_ids_3 <- tbl_w_ids_2 |> 
-    left_join(program_titles, by = join_by("titel_NL" == "pgm_title_NL"), relationship = "many-to-many")
+    left_join(program_titles, by = join_by("titel_NL" == "pgm_title_NL"))
   
   tbl_w_ids_3_missing <- tbl_w_ids_3 |> filter(is.na(pgm_id))
   
