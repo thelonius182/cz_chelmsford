@@ -42,14 +42,14 @@ tbl_zenderschema.1 <- tbl_raw_zenderschema |>
 tbl_zenderschema.2 <- tbl_zenderschema.1 |>
   select(-starts_with("r"), -starts_with("b"), -starts_with("t", ignore.case = F), -dag, -start, -Toon) |>  
   select(slot, hh_formule, everything()) |> 
-  pivot_longer(names_to = "wanneer", cols = starts_with("week_"), values_to = "titel") 
+  pivot_longer(names_to = "wanneer", cols = starts_with("week_"), values_to = "mr_key") 
 
 tbl_zenderschema.3 <- tbl_zenderschema.2 |> 
-  mutate(titel = if_else(!is.na(titel), titel, if_else(!is.na(wekelijks), wekelijks, AB_cyclus))) |> 
-  select(titel) |> distinct() 
+  mutate(mr_key = if_else(!is.na(mr_key), mr_key, if_else(!is.na(wekelijks), wekelijks, AB_cyclus))) |> 
+  select(mr_key) |> distinct() 
 
-tbl_zenderschema.4 <- tbl_zenderschema.3 |> left_join(tbl_raw_wpgidsinfo, by = join_by(titel == `key-modelrooster`)) |> 
-  select(moro_key = titel,
+tbl_zenderschema.4 <- tbl_zenderschema.3 |> left_join(tbl_raw_wpgidsinfo, by = join_by(mr_key == `key-modelrooster`)) |> 
+  select(moro_key = mr_key,
          woj_bcid,
          titel_NL = `titel-NL`,
          titel_EN = `titel-EN`,
@@ -61,6 +61,9 @@ tbl_zenderschema.4 <- tbl_zenderschema.3 |> left_join(tbl_raw_wpgidsinfo, by = j
          intro_EN = `std.samenvatting-EN`,
          afbeelding = feat_img_ids
   ) |> pivot_longer(cols = c(genre_1, genre_2), names_to = NULL, values_to = "genre", values_drop_na = TRUE) |> arrange(moro_key)
+
+uniques_titles_cz <- tbl_zenderschema.4 |> select(titel_NL, titel_EN) |> distinct() |> arrange(titel_NL)
+uniques_titles <- bind_rows(uniques_titles_cz, unique_titles_wj) |> distinct() |> arrange(titel_NL)
 
 # prepare tunnel/database settings
 source("R/cpnm_db_setup.R", encoding = "UTF-8")
@@ -144,10 +147,4 @@ repeat {
 
 # Cleanup
 dbDisconnect(con)
-
-# Kill the tunnel; find PID(s) of ssh tunnel on local port
-pid <- system2("lsof", args = c("-ti", paste0("tcp:", env_db_port)), stdout = TRUE)
-
-if (length(pid) > 0) {
-  system2("kill", pid)
-}  
+close_tunnel(tunnel)

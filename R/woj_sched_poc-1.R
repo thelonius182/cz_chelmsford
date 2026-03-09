@@ -40,14 +40,24 @@ drive_download(file = cz_get_url("rooster_woj"), overwrite = T, path = path_roos
 path_wp_gidsinfo <- "/home/lon/R_projects/cz_chelmsford/resources/wordpress_gidsinfo.xlsx"
 drive_download(file = cz_get_url("wordpress_gidsinfo"), overwrite = T, path = path_wp_gidsinfo)
 
+# LaCies
+path_gd_lacie <- "/home/lon/R_projects/cz_chelmsford/resources/lacie.xlsx"
+drive_download(file = cz_get_url("lacie"), overwrite = T, path = path_gd_lacie)
+
 # sheets als df -----------------------------------------------------------
 tbl_raw_zenderschema_woj <- cz_extract_sheet(path_rooster_woj, sheet_name = "schedule_woj") |> select(-parent)
 tbl_zenderschema_woj <- tbl_raw_zenderschema_woj |> mutate(start = as.integer(start))
 tbl_raw_wpgidsinfo <- cz_extract_sheet(path_wp_gidsinfo, sheet_name = "gids-info")
+tbl_raw_lacie <- cz_extract_sheet(path_gd_lacie, sheet_name = "woj_herhalingen_4.2")
+
+unique_titles_wj <- tbl_zenderschema_woj |> left_join(tbl_raw_wpgidsinfo, by = join_by(broadcast_id == woj_bcid)) |> 
+  rename(genre_1 = `genre-1-NL`, genre_2 = `genre-2-NL`) |> 
+  pivot_longer(cols = c(genre_1, genre_2), names_to = NULL, values_to = "genre", values_drop_na = TRUE) |> 
+  select(titel_NL = `titel-NL`, titel_EN = `titel-EN`) |> distinct() |> arrange(titel_NL)
 
 # combine week and schedule -----------------------------------------------
 woj_schedule <- bc_week |> 
-  left_join(tbl_raw_zenderschema_woj, 
+  left_join(tbl_zenderschema_woj, 
             by = join_by(bc_day_label == day, 
                          bc_week_of_month == week_vd_mnd, 
                          bc_hour_start == start)) |> 
@@ -67,13 +77,22 @@ woj_schedule_w_ids.2 <- woj_schedule_w_ids.1 |>
          genre,
          intro_NL = `std.samenvatting-NL`,
          intro_EN = `std.samenvatting-EN`,
+         broadcast_type,
          afbeelding = feat_img_ids) 
 
 source("R/cpnm_db_setup.R", encoding = "UTF-8")  
 
 # Main Control Loop
 repeat {
-  # genres in 'taxonomies'-table
+  # validate gids-info ----
+  missing_gi <- woj_schedule_w_ids.1 |> filter(is.na(`key-modelrooster`)) |> nrow()
+  
+  if (missing_gi > 0) {
+    print("gidsinfo is incomplete; quiting this job.")
+    break
+  }
+  
+  # genres ----
   query <- "select name->>'$.nl' as genre_NL, 
                    id as ty_genre_id 
             from taxonomies 
@@ -92,7 +111,7 @@ repeat {
     break
   }
   
-  # editors in 'taxonomies'-table
+  # editors ----
   query <- "select name->>'$.nl' as editor_name, 
                    id as ty_editor_id
             from taxonomies 
@@ -101,7 +120,7 @@ repeat {
             ;"
   ty_editors <- dbGetQuery(con, query)
   woj_schedule_w_ids.4 <- woj_schedule_w_ids.3 |> 
-    left_join(ty_editors, by = join_by("redacteurs" == "editor_name"), relationship = "many-to-many")
+    left_join(ty_editors, by = join_by("redacteurs" == "editor_name"))
   woj_schedule_w_ids_missing <- woj_schedule_w_ids.4 |> filter(is.na(ty_editor_id)) |> select(redacteurs) |> distinct()
   
   if (nrow(woj_schedule_w_ids_missing) > 0) {
@@ -109,6 +128,7 @@ repeat {
     break
   }
   
+  # programs ----
   query <- "with ds1 as (
    select replace(pgms.title->>'$.nl', '&amp;', '&') as pgm_title_NL, 
           pgms.id as pgm_id
@@ -123,7 +143,8 @@ repeat {
             pgm_id
    ), ds3 as (
    select pgm_title_NL, 
-          pgm_id, n_episodes,
+          pgm_id, 
+          n_episodes,
           ROW_NUMBER() OVER (PARTITION BY pgm_title_NL
                              ORDER BY n_episodes desc) AS rn
    from ds2
@@ -132,7 +153,7 @@ repeat {
    order by 1;"
   program_titles <- dbGetQuery(con, query) |> select(pgm_title_NL, pgm_id)
   woj_schedule_w_ids.5 <- woj_schedule_w_ids.4 |> 
-    left_join(program_titles, by = join_by("titel_NL" == "pgm_title_NL"), relationship = "many-to-many")
+    left_join(program_titles, by = join_by("titel_NL" == "pgm_title_NL"))
   woj_schedule_w_ids_missing <- woj_schedule_w_ids.5 |> filter(is.na(pgm_id))
   
   if (nrow(woj_schedule_w_ids_missing) > 0) {
@@ -140,6 +161,7 @@ repeat {
     break
   }
   
+  # check length ----
   wi_tot_minutes <- woj_schedule_w_ids.5 |> distinct(bc_start, minutes) |> mutate(total_minutes = sum(minutes)) |> 
     head(1) |> select(total_minutes) |> pull()
   
@@ -148,16 +170,27 @@ repeat {
     break
   }
   
+  # LaCie ----
+  tbl_lacie <- tbl_raw_lacie |> filter(!is.na(bc_woj_ts)) |>  # remove empty lines
+    mutate(bc_woj_ts = force_tz(bc_woj_ts, tzone = "Europe/Amsterdam"),
+           replay_of = force_tz(replay_of, "Europe/Amsterdam"))
+  woj_schedule_w_ids.6 <- woj_schedule_w_ids.5 |> left_join(tbl_lacie, by = join_by(bc_start == bc_woj_ts)) |> 
+    select(bc_start:pgm_id, replay_of)
+  
+  # Universe ----
+  tbl_uni <- woj_schedule_w_ids.6 |> filter(broadcast_type == "Universe")
+  
+  for (rn in seq_len(nrow(tbl_uni))) {
+    qry <- glue_sql("select * from entries where id = {tbl_uni$pgm_id[rn]};", .con = con)
+    uni_pgms <- dbGetQuery(con, qry)
+  }
+    
+  # Replays ----
+
   # exit MCL
   break
 }
 
 # Cleanup
 dbDisconnect(con)
-
-# Kill the tunnel; find PID(s) of ssh tunnel on local port
-pid <- system2("lsof", args = c("-ti", paste0("tcp:", env_db_port)), stdout = TRUE)
-
-if (length(pid) > 0) {
-  system2("kill", pid)
-}  
+close_tunnel(tunnel)

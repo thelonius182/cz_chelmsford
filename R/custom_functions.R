@@ -14,10 +14,24 @@ cz_get_url <- function(cz_ss) {
 # improve name for 'has non-zero number of characters'
 has_value <- function(x) nzchar(x)
 
-# Wait for tunnel to become available
-wait_for_tunnel <- function(t_host, t_port, total_timeout = 10) {
-  start <- Sys.time()
+wait_for_tunnel <- function(
+    tunnel,
+    t_host,
+    t_port,
+    total_timeout = 10,
+    poll_interval = 0.2
+) {
+  start_time <- Sys.time()
+  
   repeat {
+    if (!tunnel$is_alive()) {
+      err <- tunnel$read_all_error()
+      stop(
+        "SSH tunnel process exited before becoming ready.\n",
+        if (nzchar(err)) err else "No SSH error output captured."
+      )
+    }
+    
     con <- suppressWarnings(
       try(
         socketConnection(
@@ -32,18 +46,58 @@ wait_for_tunnel <- function(t_host, t_port, total_timeout = 10) {
     
     if (!inherits(con, "try-error")) {
       close(con)
-      return(TRUE)
+      return(invisible(TRUE))
     }
     
-    if (as.numeric(difftime(Sys.time(), start, units = "secs")) > total_timeout) {
-      stop("Spinning up the SSH-tunnel failed.")
+    elapsed <- as.numeric(
+      difftime(Sys.time(), start_time, units = "secs")
+    )
+    
+    if (elapsed > total_timeout) {
+      stop("Spinning up the SSH tunnel failed.")
     }
     
-    Sys.sleep(0.2)
+    Sys.sleep(poll_interval)
   }
 }
 
-ins_cpnm_pgm <- function(pm_title_NL, 
+close_tunnel <- function(tunnel) {
+  if (!is.null(tunnel) && tunnel$is_alive()) {
+    tunnel$kill()
+    tunnel$wait(timeout = 2000)
+  }
+  
+  invisible(NULL)
+}
+
+cpnm_edi_ins <- function(pm_name_NL, 
+                            pm_cpnm_db) {
+  new_id <- UUIDgenerate(use.time = FALSE)  # v4
+  ed_name_slug <- as_slug(pm_name_NL)
+  sql_stmt <- glue_sql("INSERT INTO taxonomies (
+       id,
+       type,
+       name,
+       slug,
+       site_id,
+       user_id,
+       created_at
+     )
+     VALUES (
+         {new_id},
+         'colofon',
+         JSON_OBJECT('nl', {pm_name_NL},
+                     'en', {pm_name_NL}),
+         JSON_OBJECT('nl', {ed_name_slug},
+                     'en', {ed_name_slug}),
+         1,                                      -- site_id
+         5,                                      -- user_id LvdA
+         NOW()                                   -- created_at
+     );", .con = pm_cpnm_db)
+  dbExecute(pm_cpnm_db, sql_stmt)
+}
+
+cpnm_pgm_ins <- function(pm_title_NL, 
                          pm_title_EN, 
                          pm_descr_NL,
                          pm_descr_EN,
@@ -81,34 +135,7 @@ ins_cpnm_pgm <- function(pm_title_NL,
   dbExecute(pm_cpnm_db, sql_stmt)
 }
 
-ins_cpnm_editor <- function(pm_name_NL, 
-                            pm_cpnm_db) {
-  new_id <- UUIDgenerate(use.time = FALSE)  # v4
-  ed_name_slug <- as_slug(pm_name_NL)
-  sql_stmt <- glue_sql("INSERT INTO taxonomies (
-       id,
-       type,
-       name,
-       slug,
-       site_id,
-       user_id,
-       created_at
-     )
-     VALUES (
-         {new_id},
-         'colofon',
-         JSON_OBJECT('nl', {pm_name_NL},
-                     'en', {pm_name_NL}),
-         JSON_OBJECT('nl', {ed_name_slug},
-                     'en', {ed_name_slug}),
-         1,                                      -- site_id
-         5,                                      -- user_id LvdA
-         NOW()                                   -- created_at
-     );", .con = pm_cpnm_db)
-  dbExecute(pm_cpnm_db, sql_stmt)
-}
-
-upd_cpnm_pgm <- function(pm_pgm_id,
+cpnm_pgm_upd <- function(pm_pgm_id,
                          pm_cpnm_db) {
   sql_stmt <- glue_sql("update entries set 
                           title = json_object('nl´, ),
@@ -117,7 +144,7 @@ upd_cpnm_pgm <- function(pm_pgm_id,
                         where id = {pm_pgm_id};")
 }
 
-ins_cpnm_episode <- function(pm_pgm_id, 
+cpnm_epi_ins <- function(pm_pgm_id, 
                              pm_editor_id, 
                              pm_slug_EN, 
                              pm_descr_NL,
