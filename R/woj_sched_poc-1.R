@@ -55,6 +55,8 @@ unique_titles_wj <- tbl_zenderschema_woj |> left_join(tbl_raw_wpgidsinfo, by = j
   pivot_longer(cols = c(genre_1, genre_2), names_to = NULL, values_to = "genre", values_drop_na = TRUE) |> 
   select(titel_NL = `titel-NL`, titel_EN = `titel-EN`) |> distinct() |> arrange(titel_NL)
 
+uniques_titles <- bind_rows(uniques_titles_cz, unique_titles_wj) |> distinct() |> arrange(titel_NL)
+
 # combine week and schedule -----------------------------------------------
 woj_schedule <- bc_week |> 
   left_join(tbl_zenderschema_woj, 
@@ -75,10 +77,12 @@ woj_schedule_w_ids.2 <- woj_schedule_w_ids.1 |>
          productie = `productie-1-taak`,
          redacteurs = `productie-1-mdw`,
          genre,
+         uitzendtype,
          intro_NL = `std.samenvatting-NL`,
          intro_EN = `std.samenvatting-EN`,
          broadcast_type,
-         afbeelding = feat_img_ids) 
+         afbeelding = feat_img_ids) |> 
+  mutate(titel_nl_lc = str_to_lower(titel_NL))
 
 source("R/cpnm_db_setup.R", encoding = "UTF-8")  
 
@@ -130,30 +134,26 @@ repeat {
   
   # programs ----
   query <- "with ds1 as (
-   select replace(pgms.title->>'$.nl', '&amp;', '&') as pgm_title_NL, 
-          pgms.id as pgm_id
-   from entries pgms left join entries epis on epis.parent_id = pgms.id
-                                           and pgms.type = 'program'
-                                           and epis.type = 'episode'
-   where length(pgms.title->>'$.nl') > 0
-   ), ds2 as (
-   select pgm_title_NL, pgm_id, count(*) as n_episodes 
-   from ds1
-   group by pgm_title_NL,
-            pgm_id
-   ), ds3 as (
-   select pgm_title_NL, 
-          pgm_id, 
-          n_episodes,
-          ROW_NUMBER() OVER (PARTITION BY pgm_title_NL
-                             ORDER BY n_episodes desc) AS rn
-   from ds2
-   )
-   select * from ds3  where rn = 1 
-   order by 1;"
-  program_titles <- dbGetQuery(con, query) |> select(pgm_title_NL, pgm_id)
+       select lower(p.title->>'$.nl') as titel_nl_lc, 
+              p.id as pgm_id,
+              b.dates
+       from entries p join entries e on e.parent_id = p.id
+                      join entries b on b.parent_id = e.id
+       where p.type = 'program' 
+  ), ds2 as (
+       select titel_nl_lc, pgm_id, count(*) as n_bcs
+       from ds1
+       group by titel_nl_lc, pgm_id
+  ), ds3 as (
+       select ds2.*,
+       ROW_NUMBER() OVER (PARTITION BY titel_nl_lc
+   	    			     ORDER BY n_bcs desc) AS rn
+       from ds2
+  )
+  select titel_nl_lc, pgm_id from ds3 where rn = 1 order by 1;"
+  program_titles <- dbGetQuery(con, query)
   woj_schedule_w_ids.5 <- woj_schedule_w_ids.4 |> 
-    left_join(program_titles, by = join_by("titel_NL" == "pgm_title_NL"))
+    left_join(program_titles, by = join_by("titel_nl_lc"))
   woj_schedule_w_ids_missing <- woj_schedule_w_ids.5 |> filter(is.na(pgm_id))
   
   if (nrow(woj_schedule_w_ids_missing) > 0) {
@@ -171,20 +171,60 @@ repeat {
   }
   
   # LaCie ----
-  tbl_lacie <- tbl_raw_lacie |> filter(!is.na(bc_woj_ts)) |>  # remove empty lines
+  tbl_lacie <- tbl_raw_lacie |> filter(!is.na(bc_woj_ts)) |>  # remove fully empty lines
     mutate(bc_woj_ts = force_tz(bc_woj_ts, tzone = "Europe/Amsterdam"),
            replay_of = force_tz(replay_of, "Europe/Amsterdam"))
   woj_schedule_w_ids.6 <- woj_schedule_w_ids.5 |> left_join(tbl_lacie, by = join_by(bc_start == bc_woj_ts)) |> 
-    select(bc_start:pgm_id, replay_of)
+    select(bc_start:pgm_id, replay_of_ts = replay_of) |> mutate(replay_of_epi_id = NA_character_)
+  fmt_ts <- stamp("1958-12-25 13:00:00", quiet = T, orders = "ymd HMS")
+  
+  for (rn in seq_len(nrow(woj_schedule_w_ids.6))) {
+    
+    if (woj_schedule_w_ids.6$broadcast_type[rn] != "LaCie") {
+      next
+    }
+      
+    if (is.na(woj_schedule_w_ids.6$replay_of_ts[rn])) {
+      next
+    }
+
+    df_replay <- cpnm_epi_get(pm_pgm_id = woj_schedule_w_ids.6$pgm_id[rn],
+                              pm_start = fmt_ts(woj_schedule_w_ids.6$replay_of_ts[rn]),
+                              pm_cpnm_db = con)
+    
+    if (is.na(df_replay$epi_id)) {
+      next
+    }
+    
+    woj_schedule_w_ids.6$replay_of_epi_id[rn] <- df_replay$epi_id
+  }
+  
+  # . check complete ----
+  woj_schedule_w_ids_missing <- woj_schedule_w_ids.6 |> 
+    filter(broadcast_type == "LaCie" & (is.na(replay_of_ts) | is.na(replay_of_epi_id)))
+  
+  if (nrow(woj_schedule_w_ids_missing) > 0) {
+    print("LaCie-replays are incomplete; quiting this job.")
+    break
+  }
   
   # Universe ----
-  tbl_uni <- woj_schedule_w_ids.6 |> filter(broadcast_type == "Universe")
-  
-  for (rn in seq_len(nrow(tbl_uni))) {
-    qry <- glue_sql("select * from entries where id = {tbl_uni$pgm_id[rn]};", .con = con)
-    uni_pgms <- dbGetQuery(con, qry)
-  }
+  for (rn in seq_len(nrow(woj_schedule_w_ids.6))) {
     
+    if (woj_schedule_w_ids.6$broadcast_type[rn] != "Universe") {
+      next
+    }
+
+    df_replay <- cpnm_uni_get(pm_pgm_id = woj_schedule_w_ids.6$pgm_id[rn],
+                              pm_bc_type = woj_schedule_w_ids.6$uitzendtype[rn],
+                              pm_cpnm_db = con)
+
+    if (is.na(df_replay$epi_id)) {
+      next
+    }
+
+  }
+  
   # Replays ----
 
   # exit MCL

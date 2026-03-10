@@ -48,7 +48,8 @@ tbl_zenderschema.3 <- tbl_zenderschema.2 |>
   mutate(mr_key = if_else(!is.na(mr_key), mr_key, if_else(!is.na(wekelijks), wekelijks, AB_cyclus))) |> 
   select(mr_key) |> distinct() 
 
-tbl_zenderschema.4 <- tbl_zenderschema.3 |> left_join(tbl_raw_wpgidsinfo, by = join_by(mr_key == `key-modelrooster`)) |> 
+tbl_zenderschema.4 <- tbl_zenderschema.3 |> 
+  left_join(tbl_raw_wpgidsinfo, by = join_by(mr_key == `key-modelrooster`)) |> 
   select(moro_key = mr_key,
          woj_bcid,
          titel_NL = `titel-NL`,
@@ -60,10 +61,13 @@ tbl_zenderschema.4 <- tbl_zenderschema.3 |> left_join(tbl_raw_wpgidsinfo, by = j
          intro_NL = `std.samenvatting-NL`,
          intro_EN = `std.samenvatting-EN`,
          afbeelding = feat_img_ids
-  ) |> pivot_longer(cols = c(genre_1, genre_2), names_to = NULL, values_to = "genre", values_drop_na = TRUE) |> arrange(moro_key)
+  ) |> pivot_longer(cols = c(genre_1, genre_2), 
+                    names_to = NULL, 
+                    values_to = "genre", 
+                    values_drop_na = TRUE) |> arrange(moro_key) |> 
+  mutate(titel_nl_lc = str_to_lower(titel_NL))
 
 uniques_titles_cz <- tbl_zenderschema.4 |> select(titel_NL, titel_EN) |> distinct() |> arrange(titel_NL)
-uniques_titles <- bind_rows(uniques_titles_cz, unique_titles_wj) |> distinct() |> arrange(titel_NL)
 
 # prepare tunnel/database settings
 source("R/cpnm_db_setup.R", encoding = "UTF-8")
@@ -109,30 +113,26 @@ repeat {
   }
   
   query <- "with ds1 as (
-   select replace(pgms.title->>'$.nl', '&amp;', '&') as pgm_title_NL, 
-          pgms.id as pgm_id
-   from entries pgms left join entries epis on epis.parent_id = pgms.id
-                                           and pgms.type = 'program'
-                                           and epis.type = 'episode'
-   where length(pgms.title->>'$.nl') > 0
-   ), ds2 as (
-   select pgm_title_NL, pgm_id, count(*) as n_episodes 
-   from ds1
-   group by pgm_title_NL,
-            pgm_id
-   ), ds3 as (
-   select pgm_title_NL, 
-          pgm_id, n_episodes,
-          ROW_NUMBER() OVER (PARTITION BY pgm_title_NL
-                             ORDER BY n_episodes desc) AS rn
-   from ds2
-   )
-   select * from ds3  where rn = 1 
-   order by 1;"
-  program_titles <- dbGetQuery(con, query) |> select(pgm_title_NL, pgm_id)
+       select lower(p.title->>'$.nl') as titel_nl_lc, 
+              p.id as pgm_id,
+              b.dates
+       from entries p join entries e on e.parent_id = p.id
+                      join entries b on b.parent_id = e.id
+       where p.type = 'program' 
+  ), ds2 as (
+       select titel_nl_lc, pgm_id, count(*) as n_bcs
+       from ds1
+       group by titel_nl_lc, pgm_id
+  ), ds3 as (
+       select ds2.*,
+       ROW_NUMBER() OVER (PARTITION BY titel_nl_lc
+   	    			     ORDER BY n_bcs desc) AS rn
+       from ds2
+  )
+  select titel_nl_lc, pgm_id from ds3 where rn = 1 order by 1;"
+  program_titles <- dbGetQuery(con, query)
   # program_titles <- program_titles_raw |> mutate(pgm_title_NL = str_replace_all(pgm_title_NL, "&amp;", "&"))
-  tbl_w_ids_3 <- tbl_w_ids_2 |> 
-    left_join(program_titles, by = join_by("titel_NL" == "pgm_title_NL"))
+  tbl_w_ids_3 <- tbl_w_ids_2 |> left_join(program_titles, by = join_by("titel_nl_lc"))
   
   tbl_w_ids_3_missing <- tbl_w_ids_3 |> filter(is.na(pgm_id))
   

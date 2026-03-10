@@ -111,8 +111,6 @@ cpnm_pgm_ins <- function(pm_title_NL,
     title,
     slug,
     description,
-    duration,
-    order,
     site_id,
     user_id,
     created_at
@@ -126,8 +124,6 @@ cpnm_pgm_ins <- function(pm_title_NL,
                      'en', {slug_EN}),
          JSON_OBJECT('nl', {pm_descr_NL},
                      'en', {pm_descr_EN}),
-         0,                                      -- duration
-         0,                                      -- order
          1,                                      -- site_id
          5,                                      -- user_id LvdA
          NOW()                                   -- created_at
@@ -145,11 +141,11 @@ cpnm_pgm_upd <- function(pm_pgm_id,
 }
 
 cpnm_epi_ins <- function(pm_pgm_id, 
-                             pm_editor_id, 
-                             pm_slug_EN, 
-                             pm_descr_NL,
-                             pm_descr_EN,
-                             pm_cpnm_db) {
+                         pm_editor_id, 
+                         pm_slug_EN, 
+                         pm_descr_NL,
+                         pm_descr_EN,
+                         pm_cpnm_db) {
   new_id <- UUIDgenerate(use.time = FALSE)  # v4
   sql_stmt <- glue_sql("INSERT INTO entries (
     id,
@@ -223,4 +219,29 @@ as_slug <- function(pm_str) {
   s1 <- str_replace_all(s1, " +", "-")
   s1 <- str_replace_all(s1, "-+", "-") |> str_to_lower()
   stringi::stri_trans_general(s1, "Latin-ASCII")
+}
+
+cpnm_epi_get <- function(pm_pgm_id,
+                         pm_start,
+                         pm_cpnm_db) {
+  sql_stmt <- glue_sql("select e.id as epi_id
+                        from entries p join entries e on e.parent_id = p.id
+                                       join entries b on b.parent_id = e.id
+                        where b.dates->>'$.start' = {pm_start}
+                          and p.id = {pm_pgm_id}
+                        ;", .con = pm_cpnm_db)
+  sql_res <- dbGetQuery(pm_cpnm_db, sql_stmt)
+}
+
+cpnm_uni_get <- function(pm_pgm_id,
+                         pm_max_start
+                         pm_cpnm_db) {
+  sql_stmt <- glue_sql("select e.id as epi_id
+                               b.dates->>'$.start'
+                        from entries p join entries e on e.parent_id = p.id
+                                       join entries b on b.parent_id = e.id
+                        where b.dates->>'$.start' = {pm_start}
+                          and p.id = {pm_pgm_id}
+                        ;", .con = pm_cpnm_db)
+  sql_res <- dbGetQuery(pm_cpnm_db, sql_stmt)
 }
