@@ -233,15 +233,15 @@ cpnm_epi_get <- function(pm_pgm_id,
   sql_res <- dbGetQuery(pm_cpnm_db, sql_stmt)
 }
 
-cpnm_uni_get <- function(pm_pgm_id,
-                         pm_max_start
-                         pm_cpnm_db) {
-  sql_stmt <- glue_sql("select e.id as epi_id
-                               b.dates->>'$.start'
+cpnm_uni_get <- function(pm_pgm_id, pm_max_start, pm_cpnm_db) {
+  sql_stmt <- glue_sql("select e.id as epi_id, 
+                               b.dates->>'$.start' as bc_start
                         from entries p join entries e on e.parent_id = p.id
                                        join entries b on b.parent_id = e.id
-                        where b.dates->>'$.start' = {pm_start}
-                          and p.id = {pm_pgm_id}
+                        where p.id = {pm_pgm_id}
+                          and b.dates->>'$.start' < {pm_max_start}
+                        order by 2 desc 
+                        limit 1
                         ;", .con = pm_cpnm_db)
   sql_res <- dbGetQuery(pm_cpnm_db, sql_stmt)
 }

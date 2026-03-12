@@ -12,8 +12,8 @@ now_am <- with_tz(Sys.time(), tz_am)
 
 # First Thursday 13:00:00 Amsterdam time strictly after current job date
 candidate <- update(now_am, hour = 13, minute = 0, second = 0)
-
 days_ahead <- (4 - wday(candidate, week_start = 1)) %% 7  # 4 = Thursday (Mon=1)
+
 if (days_ahead == 0 && candidate <= now_am) {
   days_ahead <- 7
 }
@@ -55,7 +55,7 @@ unique_titles_wj <- tbl_zenderschema_woj |> left_join(tbl_raw_wpgidsinfo, by = j
   pivot_longer(cols = c(genre_1, genre_2), names_to = NULL, values_to = "genre", values_drop_na = TRUE) |> 
   select(titel_NL = `titel-NL`, titel_EN = `titel-EN`) |> distinct() |> arrange(titel_NL)
 
-uniques_titles <- bind_rows(uniques_titles_cz, unique_titles_wj) |> distinct() |> arrange(titel_NL)
+# uniques_titles <- bind_rows(uniques_titles_cz, unique_titles_wj) |> distinct() |> arrange(titel_NL)
 
 # combine week and schedule -----------------------------------------------
 woj_schedule <- bc_week |> 
@@ -74,19 +74,19 @@ woj_schedule_w_ids.2 <- woj_schedule_w_ids.1 |>
          minutes,
          titel_NL = `titel-NL`,
          titel_EN = `titel-EN`,
-         productie = `productie-1-taak`,
          redacteurs = `productie-1-mdw`,
+         production_role = `productie-1-taak`,
          genre,
-         uitzendtype,
          intro_NL = `std.samenvatting-NL`,
          intro_EN = `std.samenvatting-EN`,
+         production_type = uitzendtype,
          broadcast_type,
          afbeelding = feat_img_ids) |> 
   mutate(titel_nl_lc = str_to_lower(titel_NL))
 
 source("R/cpnm_db_setup.R", encoding = "UTF-8")  
 
-# Main Control Loop
+# Main Control Loop ----
 repeat {
   # validate gids-info ----
   missing_gi <- woj_schedule_w_ids.1 |> filter(is.na(`key-modelrooster`)) |> nrow()
@@ -171,6 +171,7 @@ repeat {
   }
   
   # LaCie ----
+  # these are archived CZ-programs kept on external hard drives (made by the LaCie company) that get a replay on WJ. 
   tbl_lacie <- tbl_raw_lacie |> filter(!is.na(bc_woj_ts)) |>  # remove fully empty lines
     mutate(bc_woj_ts = force_tz(bc_woj_ts, tzone = "Europe/Amsterdam"),
            replay_of = force_tz(replay_of, "Europe/Amsterdam"))
@@ -209,17 +210,25 @@ repeat {
   }
   
   # Universe ----
+  # - these are recent CZ-programs that get a replay on WJ (after being broadcast on CZ in the last month or so). 
+  #   This week's Live CZ's can´t be replayed on WJ until next week, as they need prepping first, next Thursday. 
+  #   For the current week that means `max_start` for live CZ's is the start of this broacast-week: `start_ts` 
+  #                                   `max_start` for other CZ's is the start of the respective WJ-slot: `bc_start`
+  # NB.1 - production-type = e.g. upload, montage, live
+  #        broadcast-type  = LaCie, NonStop, Universe, WorldOfJazz, ReplayWoJ
+  # NB.2 - for Universe broadcasts, the production type is the type on CZ, not the one on WJ
   for (rn in seq_len(nrow(woj_schedule_w_ids.6))) {
     
     if (woj_schedule_w_ids.6$broadcast_type[rn] != "Universe") {
       next
     }
 
+    pm_max_start <- if (woj_schedule_w_ids.6$production_type[rn] == "live") start_ts else woj_schedule_w_ids.6$bc_start[rn]
     df_replay <- cpnm_uni_get(pm_pgm_id = woj_schedule_w_ids.6$pgm_id[rn],
-                              pm_bc_type = woj_schedule_w_ids.6$uitzendtype[rn],
+                              pm_max_start,
                               pm_cpnm_db = con)
 
-    if (is.na(df_replay$epi_id)) {
+    if (is.na(df_replay$epi_id) || is.na(df_replay$bc_start)) {
       next
     }
 
@@ -231,6 +240,6 @@ repeat {
   break
 }
 
-# Cleanup
+# Cleanup ----
 dbDisconnect(con)
 close_tunnel(tunnel)
