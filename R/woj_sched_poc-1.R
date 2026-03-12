@@ -201,8 +201,7 @@ repeat {
   }
   
   # . check complete ----
-  woj_schedule_w_ids_missing <- woj_schedule_w_ids.6 |> 
-    filter(broadcast_type == "LaCie" & (is.na(replay_of_ts) | is.na(replay_of_epi_id)))
+  woj_schedule_w_ids_missing <- woj_schedule_w_ids.6 |> filter(broadcast_type == "LaCie" & is.na(replay_of_epi_id))
   
   if (nrow(woj_schedule_w_ids_missing) > 0) {
     print("LaCie-replays are incomplete; quiting this job.")
@@ -228,13 +227,49 @@ repeat {
                               pm_max_start,
                               pm_cpnm_db = con)
 
-    if (is.na(df_replay$epi_id) || is.na(df_replay$bc_start)) {
+    if (is.na(df_replay$epi_id)) {
       next
     }
-
+    
+    woj_schedule_w_ids.6$replay_of_epi_id[rn] <- df_replay$epi_id
+    woj_schedule_w_ids.6$replay_of_ts[rn] <- df_replay$epi_start
+  }
+  
+  # . check complete ----
+  woj_schedule_w_ids_missing <- woj_schedule_w_ids.6 |> filter(broadcast_type == "Universe" & is.na(replay_of_epi_id))
+  
+  if (nrow(woj_schedule_w_ids_missing) > 0) {
+    print("Universe-replays are incomplete; quiting this job.")
+    break
   }
   
   # Replays ----
+  # - these are replays of native WJ-programs on WJ, but otherwise this works just like Universe
+  for (rn in seq_len(nrow(woj_schedule_w_ids.6))) {
+    
+    if (woj_schedule_w_ids.6$broadcast_type[rn] != "ReplayWoJ") {
+      next
+    }
+    
+    df_replay <- cpnm_uni_get(pm_pgm_id = woj_schedule_w_ids.6$pgm_id[rn],
+                              pm_max_start = woj_schedule_w_ids.6$bc_start[rn],
+                              pm_cpnm_db = con)
+    
+    if (is.na(df_replay$epi_id)) {
+      next
+    }
+    
+    woj_schedule_w_ids.6$replay_of_epi_id[rn] <- df_replay$epi_id
+    woj_schedule_w_ids.6$replay_of_ts[rn] <- df_replay$epi_start
+  }
+  
+  # . check complete ----
+  woj_schedule_w_ids_missing <- woj_schedule_w_ids.6 |> filter(broadcast_type == "Universe" & is.na(replay_of_epi_id))
+  
+  if (nrow(woj_schedule_w_ids_missing) > 0) {
+    print("WorldOfJazz-replays are incomplete; quiting this job.")
+    break
+  }
 
   # exit MCL
   break

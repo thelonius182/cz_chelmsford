@@ -234,8 +234,7 @@ cpnm_epi_get <- function(pm_pgm_id,
 }
 
 cpnm_uni_get <- function(pm_pgm_id, pm_max_start, pm_cpnm_db) {
-  sql_stmt <- glue_sql("select e.id as epi_id, 
-                               b.dates->>'$.start' as bc_start
+  sql_stmt <- glue_sql("select e.id as epi_id, b.dates->>'$.start' as epi_start 
                         from entries p join entries e on e.parent_id = p.id
                                        join entries b on b.parent_id = e.id
                         where p.id = {pm_pgm_id}

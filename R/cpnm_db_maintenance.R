@@ -7,12 +7,12 @@ ins_result <-
                pm_cpnm_db = con)
 
 # insert editor ----
-cpnm_editor_ins(pm_name_NL = 'Hans Mantel en Rembrandt Frerichs',
+cpnm_edi_ins(pm_name_NL = 'Hans Mantel en Rembrandt Frerichs',
                 pm_cpnm_db = con)
 
 # CZ: append missing colofons ----
 for (cur_editor in tbl_w_ids_2_missing$redacteurs) {
-  ins_cpnm_editor(pm_name_NL = cur_editor, pm_cpnm_db = con)
+  cpnm_edi_ins(pm_name_NL = cur_editor, pm_cpnm_db = con)
 }
 
 # WJ: append missing colofons ----
