@@ -141,61 +141,43 @@ cpnm_pgm_upd <- function(pm_pgm_id,
 }
 
 cpnm_epi_ins <- function(pm_pgm_id, 
-                         pm_editor_id, 
-                         pm_slug_EN, 
                          pm_descr_NL,
                          pm_descr_EN,
+                         pm_img_id,
+                         pm_site_id,
                          pm_cpnm_db) {
+  sql_stmt <- glue_sql("select title, slug from entries where id = {pm_pgm_id};", .con = pm_cpnm_db)
+  df_cur_pgm <- dbGetQuery(pm_cpnm_db, sql_stmt)
   new_id <- UUIDgenerate(use.time = FALSE)  # v4
-  sql_stmt <- glue_sql("INSERT INTO entries (
-    id,
-    type,
-    surtitle,
-    title,
-    subtitle,
-    slug,
-    description,
-    content,
-    blocks,
-    sections,
-    dates,
-    attributes,
-    properties,
-    playlist,
-    duration,
-    order,
-    parent_id,
-    image_id,
-    media_id,
-    site_id,
-    user_id,
-    created_at
-)
-VALUES (
-    UUID(),
-    'episode',
-    NULL,                                   -- surtitle (JSON)
-    JSON_OBJECT('en', 'Main title'),        -- title (required JSON)
-    NULL,                                   -- subtitle
-    JSON_OBJECT('en', 'my-slug'),           -- slug
-    NULL,                                   -- description
-    NULL,                                   -- content
-    NULL,                                   -- blocks
-    NULL,                                   -- sections
-    NULL,                                   -- dates
-    NULL,                                   -- attributes
-    NULL,                                   -- properties
-    NULL,                                   -- playlist
-    0,                                      -- duration
-    0,                                      -- order
-    NULL,                                   -- parent_id
-    NULL,                                   -- image_id
-    NULL,                                   -- media_id
-    1,                                      -- site_id
-    5,                                      -- user_id admin/LvdA
-    NOW()                                   -- created_at
-);", .con = pm_cpnm_db)
-dbExecute(pm_cpnm_db, sql_stmt)
+  sql_stmt <- glue_sql("
+      INSERT INTO entries (id,
+                           type,
+                           title,
+                           slug,
+                           description,
+                           duration,
+                           order,
+                           parent_id,
+                           image_id,
+                           site_id,
+                           user_id,
+                           created_at)
+      VALUES ({new_id},                               -- id
+              'episode',                              -- type
+              {df_cur_pgm$title},                     -- title 
+              {df_cur_pgm$slug},                      -- slug
+              JSON_OBJECT('nl', {pm_descr_NL},        -- description
+                          'en', {pm_descr_EN}),       
+              {pm_seconds},                           -- duration
+              0,                                      -- order
+              {pm_pgm_id},                            -- parent_id
+              {pm_img_id},                            -- image_id
+              {pm_site_id},                           -- site_id
+              5,                                      -- user_id admin/LvdA
+              NOW()                                   -- created_at
+      );", .con = pm_cpnm_db)
+  dbExecute(pm_cpnm_db, sql_stmt)
+  return(new_id)
 }
 
 add_bc_cols <- function(data, ts_col, tz = "Europe/Amsterdam") {
@@ -242,5 +224,24 @@ cpnm_uni_get <- function(pm_pgm_id, pm_max_start, pm_cpnm_db) {
                         order by 2 desc 
                         limit 1
                         ;", .con = pm_cpnm_db)
+  sql_res <- dbGetQuery(pm_cpnm_db, sql_stmt)
+}
+
+cpnm_img_get <- function(pm_img_id, pm_cpnm_db) {
+  sql_stmt <- glue_sql("SELECT id FROM media 
+                        where type = 'image'
+                          and site_id in (1, 2)
+                          and legacy_data->>'$.wp_post_id' = {pm_img_id};", 
+                       .con = pm_cpnm_db)
+  sql_res <- dbGetQuery(pm_cpnm_db, sql_stmt)
+}
+
+cpnm_chk_slots <- function(pm_site_id, pm_cpnm_db) {
+  sql_stmt <- glue_sql("select max(dates->>'$.start') as max_start_cz 
+                        from entries 
+                        where type = 'broadcast' 
+                          and site_id = {pm_site_id}
+                          and deleted_at is null;",
+                       .con = pm_cpnm_db)
   sql_res <- dbGetQuery(pm_cpnm_db, sql_stmt)
 }

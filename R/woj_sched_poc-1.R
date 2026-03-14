@@ -270,7 +270,78 @@ repeat {
     print("WorldOfJazz-replays are incomplete; quiting this job.")
     break
   }
-
+  
+  # Images ----
+  df_afb <- woj_schedule_w_ids.6 |> filter(!is.na(afbeelding)) |> select(afbeelding) |> distinct() |> 
+    mutate(afbeelding = as.integer(afbeelding), image_id = NA_character_) |> arrange(afbeelding)
+  
+  for (rn in seq_len(nrow(df_afb))) {
+    df_image <- cpnm_img_get(pm_img_id = df_afb$afbeelding[rn], pm_cpnm_db = con)
+    
+    if (is.na(df_image$id)) {
+      next
+    }
+    
+    df_afb$image_id[rn] <- df_image$id
+  }
+  
+  # . check complete ----
+  woj_schedule_w_ids_missing <- df_afb |> filter(is.na(image_id))
+  
+  if (nrow(woj_schedule_w_ids_missing) > 0) {
+    print("WorldOfJazz images are incomplete; quiting this job.")
+    break
+  }
+  
+  # . append ----
+  woj_schedule_w_ids.6 <- woj_schedule_w_ids.6 |> left_join(df_afb, by = join_by(afbeelding))
+  
+  # check latest slot ----
+  df_slots <- cpnm_chk_slots(pm_site_id = 2, pm_cpnm_db = con) |> 
+    mutate(max_start_cz = ymd_hms(max_start_cz, tz = "Europe/Amsterdam"))
+  
+  if (df_slots$max_start_cz >= start_ts) {
+    print("Not all required slots are free; quiting this job.")
+    break
+  }
+  
+  # Build new WJ-week ----
+  # - some programs have 2 main genres, so have 2 records; treat them separately: 7a for all columns,
+  #   and 7b just for the extra genre
+  woj_schedule_w_ids.7 <- woj_schedule_w_ids.6 |> group_by(bc_start) |> mutate(sch_item = n()) |> ungroup()
+  woj_schedule_w_ids.7a <- woj_schedule_w_ids.7 |> filter(sch_item == 1)
+  woj_schedule_w_ids.7b <- woj_schedule_w_ids.7 |> filter(sch_item == 2)
+  
+  for (rn in seq_len(nrow(woj_schedule_w_ids.7a))) {
+    
+    if (is.na(woj_schedule_w_ids.7a$replay_of_epi_id[rn])) {
+      # . fresh episode ----
+      epi_id_created <- cpnm_epi_ins(pm_pgm_id = woj_schedule_w_ids.7a$pgm_id[rn],
+                                     pm_descr_NL = woj_schedule_w_ids.7a$intro_NL[rn],
+                                     pm_descr_EN = woj_schedule_w_ids.7a$intro_EN[rn],
+                                     pm_img_id = woj_schedule_w_ids.7a$image_id[rn],
+                                     pm_site_id = 2,
+                                     pm_cpnm_db = con)
+      
+    } else {
+      # . replay ----
+      
+    }
+    
+    pm_max_start <- if (woj_schedule_w_ids.6$production_type[rn] == "live") start_ts else woj_schedule_w_ids.6$bc_start[rn]
+    df_replay <- cpnm_uni_get(pm_pgm_id = woj_schedule_w_ids.6$pgm_id[rn],
+                              pm_max_start,
+                              pm_cpnm_db = con)
+    
+    if (is.na(df_replay$epi_id)) {
+      next
+    }
+    
+    woj_schedule_w_ids.6$replay_of_epi_id[rn] <- df_replay$epi_id
+    woj_schedule_w_ids.6$replay_of_ts[rn] <- df_replay$epi_start
+  }
+  
+   
   # exit MCL
   break
 }
