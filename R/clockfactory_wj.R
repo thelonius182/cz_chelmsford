@@ -1,16 +1,22 @@
-# prep modelrooster en wp-gidsinfo tbv de koppeling met CPNM-id's
+# - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
+# prep program clock + catalogue to link them to CPNM-id's
+# - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
 pacman::p_load(tidyr, dplyr, stringr, readr, lubridate, fs, futile.logger, readxl, DBI,
                purrr, httr, jsonlite, yaml, ssh, googledrive, openxlsx, glue, uuid, RMariaDB)
 
+cz_site_id <- 1L
+wj_site_id <- 2L
 config <- read_yaml("config.yaml")
 source("R/custom_functions.R", encoding = "UTF-8")
 
-tz_am <- "Europe/Amsterdam"
+# init logger ----
+apf <- flog.appender(appender.file(config$log_appender_file), "clof")
 
 # Current job date (Amsterdam)
+tz_am <- "Europe/Amsterdam"
 now_am <- with_tz(Sys.time(), tz_am)
 
-# First Thursday 13:00:00 Amsterdam time strictly after current job date
+# Calculate when to start: first Thursday 13:00:00 after current job date
 candidate <- update(now_am, hour = 13, minute = 0, second = 0)
 days_ahead <- (4 - wday(candidate, week_start = 1)) %% 7  # 4 = Thursday (Mon=1)
 
@@ -20,6 +26,7 @@ if (days_ahead == 0 && candidate <= now_am) {
 
 start_ts <- candidate + days(days_ahead)
 end_ts   <- start_ts + days(7)
+flog.info(str_glue("Building a clock for the WJ-week starting {logfmt_ts(start_ts)}"), name = "clof")
 
 bc_week_ts <- tibble(
   ts = seq(from = start_ts, to = end_ts, by = "hour")
@@ -27,16 +34,15 @@ bc_week_ts <- tibble(
 
 bc_week <- add_bc_cols(bc_week_ts, ts)
 
-# downloads GD ------------------------------------------------------------
-
-# trigger GD-auth
+# downloads GD ----
+# . trigger GD-auth
 drive_auth(cache = ".secrets", email = "cz.teamservice@gmail.com")
 
-# Uitzendschema WoJ ophalen bij GD
+# . get WoJ clock from GD
 path_rooster_woj <- "/home/lon/R_projects/cz_chelmsford/resources/rooster_woj.xlsx"
 drive_download(file = cz_get_url("rooster_woj"), overwrite = T, path = path_rooster_woj)
 
-# WP-gids-info ophalen bij GD
+# . get catalogue from GD
 path_wp_gidsinfo <- "/home/lon/R_projects/cz_chelmsford/resources/wordpress_gidsinfo.xlsx"
 drive_download(file = cz_get_url("wordpress_gidsinfo"), overwrite = T, path = path_wp_gidsinfo)
 
@@ -44,7 +50,7 @@ drive_download(file = cz_get_url("wordpress_gidsinfo"), overwrite = T, path = pa
 path_gd_lacie <- "/home/lon/R_projects/cz_chelmsford/resources/lacie.xlsx"
 drive_download(file = cz_get_url("lacie"), overwrite = T, path = path_gd_lacie)
 
-# sheets als df -----------------------------------------------------------
+# sheets as df -----------------------------------------------------------
 tbl_raw_zenderschema_woj <- cz_extract_sheet(path_rooster_woj, sheet_name = "schedule_woj") |> select(-parent)
 tbl_zenderschema_woj <- tbl_raw_zenderschema_woj |> mutate(start = as.integer(start))
 tbl_raw_wpgidsinfo <- cz_extract_sheet(path_wp_gidsinfo, sheet_name = "gids-info")
@@ -85,8 +91,6 @@ woj_schedule_w_ids.2 <- woj_schedule_w_ids.1 |>
   mutate(titel_nl_lc = str_to_lower(titel_NL))
 
 source("R/cpnm_db_setup.R", encoding = "UTF-8")  
-cz_site_id <- 1L
-wj_site_id <- 2L
 
 # > Main Control Loop ----
 repeat {
@@ -94,7 +98,7 @@ repeat {
   missing_gi <- woj_schedule_w_ids.1 |> filter(is.na(`key-modelrooster`)) |> nrow()
   
   if (missing_gi > 0) {
-    print("gidsinfo is incomplete; quiting this job.")
+    flog.error("gidsinfo is incomplete; quiting this job.", name = "clof")
     break
   }
   
@@ -113,7 +117,7 @@ repeat {
   woj_schedule_w_ids_missing <- woj_schedule_w_ids.3 |> filter(is.na(ty_genre_id))
   
   if (nrow(woj_schedule_w_ids_missing) > 0) {
-    print("genres missing in the taxonomy; quiting this job.")
+    flog.error("genres missing in the taxonomy; quiting this job.", name = "clof")
     break
   }
   
@@ -130,7 +134,7 @@ repeat {
   woj_schedule_w_ids_missing <- woj_schedule_w_ids.4 |> filter(is.na(ty_editor_id)) |> select(redacteurs) |> distinct()
   
   if (nrow(woj_schedule_w_ids_missing) > 0) {
-    print("editors missing in the taxonomy; quiting this job.")
+    flog.error("editors missing in the taxonomy; quiting this job.", name = "clof")
     break
   }
   
@@ -159,7 +163,7 @@ repeat {
   woj_schedule_w_ids_missing <- woj_schedule_w_ids.5 |> filter(is.na(pgm_id))
   
   if (nrow(woj_schedule_w_ids_missing) > 0) {
-    print("programs missing in 'entries'; quiting this job.")
+    flog.error("programs missing in 'entries'; quiting this job.", name = "clof")
     break
   }
   
@@ -168,7 +172,7 @@ repeat {
     head(1) |> select(total_minutes) |> pull()
   
   if (wi_tot_minutes != 10080L) {
-    print(str_glue("woj_schedule: expected 10080 minutes, but got {wi_tot_minutes}; quiting this job."))
+    flog.error(str_glue("woj_schedule: expected 10080 minutes, but got {wi_tot_minutes}; quiting this job."), name = "clof")
     break
   }
   
@@ -206,7 +210,7 @@ repeat {
   woj_schedule_w_ids_missing <- woj_schedule_w_ids.6 |> filter(broadcast_type == "LaCie" & is.na(replay_of_epi_id))
   
   if (nrow(woj_schedule_w_ids_missing) > 0) {
-    print("LaCie-replays are incomplete; quiting this job.")
+    flog.error("LaCie-replays are incomplete; quiting this job.", name = "clof")
     break
   }
   
@@ -241,7 +245,7 @@ repeat {
   woj_schedule_w_ids_missing <- woj_schedule_w_ids.6 |> filter(broadcast_type == "Universe" & is.na(replay_of_epi_id))
   
   if (nrow(woj_schedule_w_ids_missing) > 0) {
-    print("Universe-replays are incomplete; quiting this job.")
+    flog.error("Universe-replays are incomplete; quiting this job.", name = "clof")
     break
   }
   
@@ -269,7 +273,7 @@ repeat {
   woj_schedule_w_ids_missing <- woj_schedule_w_ids.6 |> filter(broadcast_type == "Universe" & is.na(replay_of_epi_id))
   
   if (nrow(woj_schedule_w_ids_missing) > 0) {
-    print("WorldOfJazz-replays are incomplete; quiting this job.")
+    flog.error("WorldOfJazz-replays are incomplete; quiting this job.", name = "clof")
     break
   }
   
@@ -291,7 +295,7 @@ repeat {
   woj_schedule_w_ids_missing <- df_afb |> filter(is.na(image_id))
   
   if (nrow(woj_schedule_w_ids_missing) > 0) {
-    print("WorldOfJazz images are incomplete; quiting this job.")
+    flog.error("WorldOfJazz images are incomplete; quiting this job.", name = "clof")
     break
   }
   
@@ -303,10 +307,8 @@ repeat {
     mutate(max_start_cz = ymd_hms(max_start_cz, tz = "Europe/Amsterdam"))
   
   if (df_slots$max_start_cz >= start_ts) {
-    # temp exception
-    # print("Not all required slots are free; quiting this job.")
-    # break
-    # temp exception
+    flog.error("Not all required slots are free; quiting this job.", name = "clof")
+    break
   }
   
   # Build new WJ-week ----
@@ -371,3 +373,4 @@ repeat {
 # Cleanup ----
 dbDisconnect(con)
 close_tunnel(tunnel)
+flog.info("Clockfactory WJ: job finished", name = "clof")

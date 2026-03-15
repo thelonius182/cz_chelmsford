@@ -93,6 +93,10 @@ as_slug <- function(pm_str) {
   stringi::stri_trans_general(s1, "Latin-ASCII")
 }
 
+logfmt_ts <- function(x) {
+  format(x, "%Y-%m-%d %H:%M:%S %Z")
+}
+
 cpnm_pgm_upd <- function(pm_pgm_id,
                          pm_cpnm_db) {
   sql_stmt <- glue_sql("update entries set 
