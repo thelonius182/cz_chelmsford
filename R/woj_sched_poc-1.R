@@ -86,7 +86,7 @@ woj_schedule_w_ids.2 <- woj_schedule_w_ids.1 |>
 
 source("R/cpnm_db_setup.R", encoding = "UTF-8")  
 
-# Main Control Loop ----
+# > Main Control Loop ----
 repeat {
   # validate gids-info ----
   missing_gi <- woj_schedule_w_ids.1 |> filter(is.na(`key-modelrooster`)) |> nrow()
@@ -308,39 +308,53 @@ repeat {
   # Build new WJ-week ----
   # - some programs have 2 main genres, so have 2 records; treat them separately: 7a for all columns,
   #   and 7b just for the extra genre
-  woj_schedule_w_ids.7 <- woj_schedule_w_ids.6 |> group_by(bc_start) |> mutate(sch_item = n()) |> ungroup()
+  woj_schedule_w_ids.7 <- woj_schedule_w_ids.6 |> group_by(bc_start) |> mutate(sch_item = row_number()) |> ungroup()
   woj_schedule_w_ids.7a <- woj_schedule_w_ids.7 |> filter(sch_item == 1)
   woj_schedule_w_ids.7b <- woj_schedule_w_ids.7 |> filter(sch_item == 2)
   
   for (rn in seq_len(nrow(woj_schedule_w_ids.7a))) {
     
     if (is.na(woj_schedule_w_ids.7a$replay_of_epi_id[rn])) {
-      # . fresh episode ----
-      epi_id_created <- cpnm_epi_ins(pm_pgm_id = woj_schedule_w_ids.7a$pgm_id[rn],
-                                     pm_descr_NL = woj_schedule_w_ids.7a$intro_NL[rn],
-                                     pm_descr_EN = woj_schedule_w_ids.7a$intro_EN[rn],
-                                     pm_img_id = woj_schedule_w_ids.7a$image_id[rn],
-                                     pm_site_id = 2,
-                                     pm_cpnm_db = con)
+      # . fresh episode & broadcast ----
+      fresh_epi_bc <- cpnm_epi_ins(pm_pgm_id = woj_schedule_w_ids.7a$pgm_id[rn],
+                                   pm_descr_NL = woj_schedule_w_ids.7a$intro_NL[rn],
+                                   pm_descr_EN = woj_schedule_w_ids.7a$intro_EN[rn],
+                                   pm_img_id = woj_schedule_w_ids.7a$image_id[rn],
+                                   pm_site_id = 2,
+                                   pm_bc_start = woj_schedule_w_ids.7a$bc_start[rn],
+                                   pm_bc_minutes = woj_schedule_w_ids.7a$minutes[rn],
+                                   pm_cpnm_db = con)
+      # . genre ----
+      # - add an `episode` taxonomable record for first genre
+      txb_res <- cpnm_txb_ins(pm_epi_id = fresh_epi_bc$new_id_epi,
+                              pm_txy_id = woj_schedule_w_ids.7a$ty_genre_id[rn],
+                              pm_cpnm_db = con)
       
+      # - add an `episode` taxonomable record for second genre
+      df_g2 <- woj_schedule_w_ids.7b |> filter(bc_start == woj_schedule_w_ids.7a$bc_start[rn])
+      
+      if (nrow(df_g2) == 1) {
+        txb_res <- cpnm_txb_ins(pm_epi_id = fresh_epi_bc$new_id_epi,
+                                pm_txy_id = df_g2$ty_genre_id,
+                                pm_cpnm_db = con)
+      }
+      
+      # . editor ----
+      # - add an `episode` taxonomable record for editors and production-role (txy-type colofon)
+      txb_res <- cpnm_txb_edi_ins(pm_epi_id = fresh_epi_bc$new_id_epi,
+                                  pm_txy_id = woj_schedule_w_ids.7a$ty_editor_id[rn],
+                                  pm_role_NL = woj_schedule_w_ids.7a$production_role[rn],
+                                  pm_cpnm_db = con)
     } else {
       # . replay ----
-      
+      bc_replay_res <- cpnm_bc_ins(pm_pgm_id = woj_schedule_w_ids.7a$pgm_id[rn],
+                                   pm_epi_id = woj_schedule_w_ids.7a$replay_of_epi_id[rn],
+                                   pm_site_id = 2,
+                                   pm_bc_start = woj_schedule_w_ids.7a$bc_start[rn],
+                                   pm_bc_minutes = woj_schedule_w_ids.7a$minutes[rn],
+                                   pm_cpnm_db = con)
     }
-    
-    pm_max_start <- if (woj_schedule_w_ids.6$production_type[rn] == "live") start_ts else woj_schedule_w_ids.6$bc_start[rn]
-    df_replay <- cpnm_uni_get(pm_pgm_id = woj_schedule_w_ids.6$pgm_id[rn],
-                              pm_max_start,
-                              pm_cpnm_db = con)
-    
-    if (is.na(df_replay$epi_id)) {
-      next
-    }
-    
-    woj_schedule_w_ids.6$replay_of_epi_id[rn] <- df_replay$epi_id
-    woj_schedule_w_ids.6$replay_of_ts[rn] <- df_replay$epi_start
   }
-  
    
   # exit MCL
   break

@@ -70,6 +70,38 @@ close_tunnel <- function(tunnel) {
   invisible(NULL)
 }
 
+add_bc_cols <- function(data, ts_col, tz = "Europe/Amsterdam") {
+  ts_col <- rlang::ensym(ts_col)
+  
+  day_map <- c("zo","ma","di","wo","do","vr","za")  # lubridate wday: 1=Sunday .. 7=Saturday
+  
+  data %>%
+    mutate(
+      .ts_amsterdam = with_tz(as.POSIXct(!!ts_col, tz = tz), tz = tz),
+      bc_day_label = day_map[wday(.ts_amsterdam)],
+      bc_week_of_month = 1L + (day(.ts_amsterdam) - 1L) %/% 7L,
+      bc_hour_start = hour(.ts_amsterdam),
+      .ts_amsterdam = NULL
+    )
+}
+
+as_slug <- function(pm_str) {
+  s1 <- str_replace_all(pm_str, "[^- [:word:]]", "")
+  s1 <- str_trim(string = s1, side = "both")
+  s1 <- str_replace_all(s1, " +", "-")
+  s1 <- str_replace_all(s1, "-+", "-") |> str_to_lower()
+  stringi::stri_trans_general(s1, "Latin-ASCII")
+}
+
+cpnm_pgm_upd <- function(pm_pgm_id,
+                         pm_cpnm_db) {
+  sql_stmt <- glue_sql("update entries set 
+                          title = json_object('nl´, ),
+                          slug = json_object()
+                          description = json_object()
+                        where id = {pm_pgm_id};")
+}
+
 cpnm_edi_ins <- function(pm_name_NL, 
                             pm_cpnm_db) {
   new_id <- UUIDgenerate(use.time = FALSE)  # v4
@@ -131,24 +163,19 @@ cpnm_pgm_ins <- function(pm_title_NL,
   dbExecute(pm_cpnm_db, sql_stmt)
 }
 
-cpnm_pgm_upd <- function(pm_pgm_id,
-                         pm_cpnm_db) {
-  sql_stmt <- glue_sql("update entries set 
-                          title = json_object('nl´, ),
-                          slug = json_object()
-                          description = json_object()
-                        where id = {pm_pgm_id};")
-}
-
-cpnm_epi_ins <- function(pm_pgm_id, 
-                         pm_descr_NL,
-                         pm_descr_EN,
-                         pm_img_id,
-                         pm_site_id,
-                         pm_cpnm_db) {
+cpnm_epi_bc_ins <- function(pm_pgm_id, 
+                            pm_descr_NL,
+                            pm_descr_EN,
+                            pm_img_id,
+                            pm_site_id,
+                            pm_bc_start,
+                            pm_bc_minutes,
+                            pm_cpnm_db) {
   sql_stmt <- glue_sql("select title, slug from entries where id = {pm_pgm_id};", .con = pm_cpnm_db)
   df_cur_pgm <- dbGetQuery(pm_cpnm_db, sql_stmt)
-  new_id <- UUIDgenerate(use.time = FALSE)  # v4
+  
+  new_id_epi <- UUIDgenerate(use.time = FALSE)  # v4
+  bc_seconds <- 60 * pm_bc_minutes
   sql_stmt <- glue_sql("
       INSERT INTO entries (id,
                            type,
@@ -162,13 +189,13 @@ cpnm_epi_ins <- function(pm_pgm_id,
                            site_id,
                            user_id,
                            created_at)
-      VALUES ({new_id},                               -- id
+      VALUES ({new_id_epi},                           -- id
               'episode',                              -- type
               {df_cur_pgm$title},                     -- title 
               {df_cur_pgm$slug},                      -- slug
               JSON_OBJECT('nl', {pm_descr_NL},        -- description
                           'en', {pm_descr_EN}),       
-              {pm_seconds},                           -- duration
+              {bc_seconds},                           -- duration
               0,                                      -- order
               {pm_pgm_id},                            -- parent_id
               {pm_img_id},                            -- image_id
@@ -176,31 +203,121 @@ cpnm_epi_ins <- function(pm_pgm_id,
               5,                                      -- user_id admin/LvdA
               NOW()                                   -- created_at
       );", .con = pm_cpnm_db)
-  dbExecute(pm_cpnm_db, sql_stmt)
-  return(new_id)
+  sql_res <- dbExecute(pm_cpnm_db, sql_stmt)
+  
+  new_id_bc <- UUIDgenerate(use.time = FALSE)  # v4
+  stop_ts = pm_bc_start + minutes(pm_bc_minutes)
+  sql_stmt <- glue_sql("
+      INSERT INTO entries (id,
+                           type,
+                           title,
+                           slug,
+                           dates,
+                           duration,
+                           order,
+                           parent_id,
+                           site_id,
+                           user_id,
+                           created_at)
+      VALUES ({new_id_bc},                            -- id
+              'broadcast',                            -- type
+              {df_cur_pgm$title},                     -- title 
+              {df_cur_pgm$slug},                      -- slug
+              JSON_OBJECT('start', {pm_bc_start},     -- dates
+                          'end', {stop_ts}),       
+              {bc_seconds},                           -- duration
+              0,                                      -- order
+              {new_id_epi},                           -- parent_id
+              {pm_site_id},                           -- site_id
+              5,                                      -- user_id admin/LvdA
+              NOW()                                   -- created_at
+      );", .con = pm_cpnm_db)
+  sql_res <- dbExecute(pm_cpnm_db, sql_stmt)
+  
+  return(new_id_epi)
 }
 
-add_bc_cols <- function(data, ts_col, tz = "Europe/Amsterdam") {
-  ts_col <- rlang::ensym(ts_col)
+cpnm_bc_ins <- function(pm_pgm_id, 
+                        pm_epi_id,
+                        pm_site_id,
+                        pm_bc_start,
+                        pm_bc_minutes,
+                        pm_cpnm_db) {
+  sql_stmt <- glue_sql("select title, slug from entries where id = {pm_pgm_id};", .con = pm_cpnm_db)
+  df_cur_pgm <- dbGetQuery(pm_cpnm_db, sql_stmt)
   
-  day_map <- c("zo","ma","di","wo","do","vr","za")  # lubridate wday: 1=Sunday .. 7=Saturday
-  
-  data %>%
-    mutate(
-      .ts_amsterdam = with_tz(as.POSIXct(!!ts_col, tz = tz), tz = tz),
-      bc_day_label = day_map[wday(.ts_amsterdam)],
-      bc_week_of_month = 1L + (day(.ts_amsterdam) - 1L) %/% 7L,
-      bc_hour_start = hour(.ts_amsterdam),
-      .ts_amsterdam = NULL
-    )
+  bc_seconds <- 60 * pm_bc_minutes
+  new_id_bc <- UUIDgenerate(use.time = FALSE)  # v4
+  stop_ts = pm_bc_start + minutes(pm_bc_minutes)
+  sql_stmt <- glue_sql("
+      INSERT INTO entries (id,
+                           type,
+                           title,
+                           slug,
+                           dates,
+                           duration,
+                           order,
+                           parent_id,
+                           site_id,
+                           user_id,
+                           created_at)
+      VALUES ({new_id_bc},                            -- id
+              'broadcast',                            -- type
+              {df_cur_pgm$title},                     -- title 
+              {df_cur_pgm$slug},                      -- slug
+              JSON_OBJECT('start', {pm_bc_start},     -- dates
+                          'end', {stop_ts}),       
+              {bc_seconds},                           -- duration
+              0,                                      -- order
+              {pm_epi_id},                            -- parent_id
+              {pm_site_id},                           -- site_id
+              5,                                      -- user_id admin/LvdA
+              NOW()                                   -- created_at
+      );", .con = pm_cpnm_db)
+  sql_res <- dbExecute(pm_cpnm_db, sql_stmt)
 }
 
-as_slug <- function(pm_str) {
-  s1 <- str_replace_all(pm_str, "[^- [:word:]]", "")
-  s1 <- str_trim(string = s1, side = "both")
-  s1 <- str_replace_all(s1, " +", "-")
-  s1 <- str_replace_all(s1, "-+", "-") |> str_to_lower()
-  stringi::stri_trans_general(s1, "Latin-ASCII")
+cpnm_txb_edi_ins <- function(pm_epi_id,
+                         pm_txy_id,
+                         pm_role_NL,
+                         pm_cpnm_db) {
+  role_EN <- if (str_ends(pm_role, pattern = "tatie")) {
+    "Produced & presented by"
+  } else {
+    "Produced by"
+  }
+  
+  sql_stmt <- glue_sql("
+      INSERT INTO taxonomables (taxonomy_id,
+                                taxonomable_type,
+                                taxonomable_id,
+                                order,
+                                label)
+      VALUES ({pm_txy_id},
+              'episode',
+              {pm_epi_id},
+              0,
+              JSON_OBJECT('nl', {pm_role_NL},
+                          'en', {role_EN})
+      );", .con = pm_cpnm_db)
+  sql_res <- dbExecute(pm_cpnm_db, sql_stmt)
+  
+}
+
+cpnm_txb_ins <- function(pm_epi_id,
+                         pm_txy_id,
+                         pm_cpnm_db) {
+  sql_stmt <- glue_sql("
+      INSERT INTO taxonomables (taxonomy_id,
+                                taxonomable_type,
+                                taxonomable_id,
+                                order)
+      VALUES ({pm_txy_id},
+              'episode',
+              {pm_epi_id},
+              0
+      );", .con = pm_cpnm_db)
+  sql_res <- dbExecute(pm_cpnm_db, sql_stmt)
 }
 
 cpnm_epi_get <- function(pm_pgm_id,
