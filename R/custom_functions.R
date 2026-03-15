@@ -183,7 +183,6 @@ cpnm_epi_bc_ins <- function(pm_pgm_id,
                            slug,
                            description,
                            duration,
-                           order,
                            parent_id,
                            image_id,
                            site_id,
@@ -191,12 +190,11 @@ cpnm_epi_bc_ins <- function(pm_pgm_id,
                            created_at)
       VALUES ({new_id_epi},                           -- id
               'episode',                              -- type
-              {df_cur_pgm$title},                     -- title 
-              {df_cur_pgm$slug},                      -- slug
+              cast({df_cur_pgm$title}as json),        -- title 
+              cast({df_cur_pgm$slug} as json),        -- slug
               JSON_OBJECT('nl', {pm_descr_NL},        -- description
                           'en', {pm_descr_EN}),       
               {bc_seconds},                           -- duration
-              0,                                      -- order
               {pm_pgm_id},                            -- parent_id
               {pm_img_id},                            -- image_id
               {pm_site_id},                           -- site_id
@@ -206,7 +204,8 @@ cpnm_epi_bc_ins <- function(pm_pgm_id,
   sql_res <- dbExecute(pm_cpnm_db, sql_stmt)
   
   new_id_bc <- UUIDgenerate(use.time = FALSE)  # v4
-  stop_ts = pm_bc_start + minutes(pm_bc_minutes)
+  fmt_start_ts = fmt_ts(pm_bc_start)
+  fmt_stop_ts = fmt_ts(pm_bc_start + minutes(pm_bc_minutes))
   sql_stmt <- glue_sql("
       INSERT INTO entries (id,
                            type,
@@ -214,19 +213,17 @@ cpnm_epi_bc_ins <- function(pm_pgm_id,
                            slug,
                            dates,
                            duration,
-                           order,
                            parent_id,
                            site_id,
                            user_id,
                            created_at)
       VALUES ({new_id_bc},                            -- id
               'broadcast',                            -- type
-              {df_cur_pgm$title},                     -- title 
-              {df_cur_pgm$slug},                      -- slug
-              JSON_OBJECT('start', {pm_bc_start},     -- dates
-                          'end', {stop_ts}),       
+              cast({df_cur_pgm$title}as json),        -- title 
+              cast({df_cur_pgm$slug} as json),        -- slug
+              JSON_OBJECT('start', {fmt_start_ts},    -- dates
+                          'end', {fmt_stop_ts}),       
               {bc_seconds},                           -- duration
-              0,                                      -- order
               {new_id_epi},                           -- parent_id
               {pm_site_id},                           -- site_id
               5,                                      -- user_id admin/LvdA
@@ -248,7 +245,8 @@ cpnm_bc_ins <- function(pm_pgm_id,
   
   bc_seconds <- 60 * pm_bc_minutes
   new_id_bc <- UUIDgenerate(use.time = FALSE)  # v4
-  stop_ts = pm_bc_start + minutes(pm_bc_minutes)
+  fmt_start_ts = fmt_ts(pm_bc_start)
+  fmt_stop_ts = fmt_ts(pm_bc_start + minutes(pm_bc_minutes))
   sql_stmt <- glue_sql("
       INSERT INTO entries (id,
                            type,
@@ -256,19 +254,17 @@ cpnm_bc_ins <- function(pm_pgm_id,
                            slug,
                            dates,
                            duration,
-                           order,
                            parent_id,
                            site_id,
                            user_id,
                            created_at)
       VALUES ({new_id_bc},                            -- id
               'broadcast',                            -- type
-              {df_cur_pgm$title},                     -- title 
-              {df_cur_pgm$slug},                      -- slug
-              JSON_OBJECT('start', {pm_bc_start},     -- dates
-                          'end', {stop_ts}),       
+              cast({df_cur_pgm$title} as json),       -- title 
+              cast({df_cur_pgm$slug} as json),        -- slug
+              JSON_OBJECT('start', {fmt_start_ts},    -- dates
+                          'end', {fmt_stop_ts}),       
               {bc_seconds},                           -- duration
-              0,                                      -- order
               {pm_epi_id},                            -- parent_id
               {pm_site_id},                           -- site_id
               5,                                      -- user_id admin/LvdA
@@ -281,7 +277,7 @@ cpnm_txb_edi_ins <- function(pm_epi_id,
                          pm_txy_id,
                          pm_role_NL,
                          pm_cpnm_db) {
-  role_EN <- if (str_ends(pm_role, pattern = "tatie")) {
+  role_EN <- if (str_ends(pm_role_NL, pattern = "tatie")) {
     "Produced & presented by"
   } else {
     "Produced by"
@@ -291,12 +287,10 @@ cpnm_txb_edi_ins <- function(pm_epi_id,
       INSERT INTO taxonomables (taxonomy_id,
                                 taxonomable_type,
                                 taxonomable_id,
-                                order,
                                 label)
       VALUES ({pm_txy_id},
               'episode',
               {pm_epi_id},
-              0,
               JSON_OBJECT('nl', {pm_role_NL},
                           'en', {role_EN})
       );", .con = pm_cpnm_db)
@@ -306,16 +300,17 @@ cpnm_txb_edi_ins <- function(pm_epi_id,
 
 cpnm_txb_ins <- function(pm_epi_id,
                          pm_txy_id,
+                         pm_order,
                          pm_cpnm_db) {
   sql_stmt <- glue_sql("
       INSERT INTO taxonomables (taxonomy_id,
                                 taxonomable_type,
                                 taxonomable_id,
-                                order)
+                                `order`)
       VALUES ({pm_txy_id},
               'episode',
               {pm_epi_id},
-              0
+              {pm_order}
       );", .con = pm_cpnm_db)
   sql_res <- dbExecute(pm_cpnm_db, sql_stmt)
 }

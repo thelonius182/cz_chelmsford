@@ -85,6 +85,8 @@ woj_schedule_w_ids.2 <- woj_schedule_w_ids.1 |>
   mutate(titel_nl_lc = str_to_lower(titel_NL))
 
 source("R/cpnm_db_setup.R", encoding = "UTF-8")  
+cz_site_id <- 1L
+wj_site_id <- 2L
 
 # > Main Control Loop ----
 repeat {
@@ -301,8 +303,10 @@ repeat {
     mutate(max_start_cz = ymd_hms(max_start_cz, tz = "Europe/Amsterdam"))
   
   if (df_slots$max_start_cz >= start_ts) {
-    print("Not all required slots are free; quiting this job.")
-    break
+    # temp exception
+    # print("Not all required slots are free; quiting this job.")
+    # break
+    # temp exception
   }
   
   # Build new WJ-week ----
@@ -313,35 +317,39 @@ repeat {
   woj_schedule_w_ids.7b <- woj_schedule_w_ids.7 |> filter(sch_item == 2)
   
   for (rn in seq_len(nrow(woj_schedule_w_ids.7a))) {
-    
+    # temp exception
+    if (rn %in% c(1, 2)) next
+    # temp exception
     if (is.na(woj_schedule_w_ids.7a$replay_of_epi_id[rn])) {
       # . fresh episode & broadcast ----
-      fresh_epi_bc <- cpnm_epi_ins(pm_pgm_id = woj_schedule_w_ids.7a$pgm_id[rn],
-                                   pm_descr_NL = woj_schedule_w_ids.7a$intro_NL[rn],
-                                   pm_descr_EN = woj_schedule_w_ids.7a$intro_EN[rn],
-                                   pm_img_id = woj_schedule_w_ids.7a$image_id[rn],
-                                   pm_site_id = 2,
-                                   pm_bc_start = woj_schedule_w_ids.7a$bc_start[rn],
-                                   pm_bc_minutes = woj_schedule_w_ids.7a$minutes[rn],
-                                   pm_cpnm_db = con)
+      fresh_epi_bc <- cpnm_epi_bc_ins(pm_pgm_id = woj_schedule_w_ids.7a$pgm_id[rn],
+                                      pm_descr_NL = woj_schedule_w_ids.7a$intro_NL[rn],
+                                      pm_descr_EN = woj_schedule_w_ids.7a$intro_EN[rn],
+                                      pm_img_id = woj_schedule_w_ids.7a$image_id[rn],
+                                      pm_site_id = wj_site_id,
+                                      pm_bc_start = woj_schedule_w_ids.7a$bc_start[rn],
+                                      pm_bc_minutes = woj_schedule_w_ids.7a$minutes[rn],
+                                      pm_cpnm_db = con)
       # . genre ----
       # - add an `episode` taxonomable record for first genre
-      txb_res <- cpnm_txb_ins(pm_epi_id = fresh_epi_bc$new_id_epi,
+      txb_res <- cpnm_txb_ins(pm_epi_id = fresh_epi_bc,
                               pm_txy_id = woj_schedule_w_ids.7a$ty_genre_id[rn],
+                              pm_order = 1,
                               pm_cpnm_db = con)
       
       # - add an `episode` taxonomable record for second genre
       df_g2 <- woj_schedule_w_ids.7b |> filter(bc_start == woj_schedule_w_ids.7a$bc_start[rn])
       
       if (nrow(df_g2) == 1) {
-        txb_res <- cpnm_txb_ins(pm_epi_id = fresh_epi_bc$new_id_epi,
+        txb_res <- cpnm_txb_ins(pm_epi_id = fresh_epi_bc,
                                 pm_txy_id = df_g2$ty_genre_id,
+                                pm_order = 2,
                                 pm_cpnm_db = con)
       }
       
       # . editor ----
       # - add an `episode` taxonomable record for editors and production-role (txy-type colofon)
-      txb_res <- cpnm_txb_edi_ins(pm_epi_id = fresh_epi_bc$new_id_epi,
+      txb_res <- cpnm_txb_edi_ins(pm_epi_id = fresh_epi_bc,
                                   pm_txy_id = woj_schedule_w_ids.7a$ty_editor_id[rn],
                                   pm_role_NL = woj_schedule_w_ids.7a$production_role[rn],
                                   pm_cpnm_db = con)
@@ -349,7 +357,7 @@ repeat {
       # . replay ----
       bc_replay_res <- cpnm_bc_ins(pm_pgm_id = woj_schedule_w_ids.7a$pgm_id[rn],
                                    pm_epi_id = woj_schedule_w_ids.7a$replay_of_epi_id[rn],
-                                   pm_site_id = 2,
+                                   pm_site_id = wj_site_id,
                                    pm_bc_start = woj_schedule_w_ids.7a$bc_start[rn],
                                    pm_bc_minutes = woj_schedule_w_ids.7a$minutes[rn],
                                    pm_cpnm_db = con)
