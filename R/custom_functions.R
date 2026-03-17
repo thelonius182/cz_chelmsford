@@ -14,62 +14,6 @@ cz_get_url <- function(cz_ss) {
 # improve name for 'has non-zero number of characters'
 has_value <- function(x) nzchar(x)
 
-wait_for_tunnel <- function(
-    tunnel,
-    t_host,
-    t_port,
-    total_timeout = 10,
-    poll_interval = 0.2
-) {
-  start_time <- Sys.time()
-  
-  repeat {
-    if (!tunnel$is_alive()) {
-      err <- tunnel$read_all_error()
-      stop(
-        "SSH tunnel process exited before becoming ready.\n",
-        if (nzchar(err)) err else "No SSH error output captured."
-      )
-    }
-    
-    con <- suppressWarnings(
-      try(
-        socketConnection(
-          host = t_host,
-          port = t_port,
-          open = "r",
-          timeout = 1
-        ),
-        silent = TRUE
-      )
-    )
-    
-    if (!inherits(con, "try-error")) {
-      close(con)
-      return(invisible(TRUE))
-    }
-    
-    elapsed <- as.numeric(
-      difftime(Sys.time(), start_time, units = "secs")
-    )
-    
-    if (elapsed > total_timeout) {
-      stop("Spinning up the SSH tunnel failed.")
-    }
-    
-    Sys.sleep(poll_interval)
-  }
-}
-
-close_tunnel <- function(tunnel) {
-  if (!is.null(tunnel) && tunnel$is_alive()) {
-    tunnel$kill()
-    tunnel$wait(timeout = 2000)
-  }
-  
-  invisible(NULL)
-}
-
 add_bc_cols <- function(data, ts_col, tz = "Europe/Amsterdam") {
   ts_col <- rlang::ensym(ts_col)
   
@@ -97,13 +41,42 @@ logfmt_ts <- function(x) {
   format(x, "%Y-%m-%d %H:%M:%S %Z")
 }
 
-cpnm_pgm_upd <- function(pm_pgm_id,
-                         pm_cpnm_db) {
-  sql_stmt <- glue_sql("update entries set 
-                          title = json_object('nl´, ),
-                          slug = json_object()
-                          description = json_object()
-                        where id = {pm_pgm_id};")
+# Infer the bi-weekly cycle (A or B) for the current CZ-broadcast week (Thu-Thu).
+# 'x' is expected to be Thursday-start-of-week
+week_label <- function(x) {
+  # test a Friday: x <- "2025-12-19" 
+  ymd_x <- ymd(x)
+  if (is.na(ymd_x)) stop(str_glue("expected: a valid ymd date string. Got: {x}"))
+  a_Monday <- 1L
+  wd_x <- wday(ymd_x, week_start = a_Monday)
+  if (wd_x != 4) stop(str_glue("expected: 4 = Thursday. Got: {wd_x}"))
+  ref_date_B_cycle <- ymd("2019-10-17")
+  n_weeks <- as.integer(ymd_x - ref_date_B_cycle) %/% 7
+  if (n_weeks %% 2 == 0) "B" else "A"
+}
+
+latest_week <- function(pm_cpnm_db) {
+  sql_stmt <- "WITH latest_8 AS (
+      SELECT DATE(dates->>'$.start') AS d
+      FROM entries
+      where type = 'broadcast' 
+	      and site_id = 1 
+        and dates->>'$.start' regexp '19:00:00$'
+      ORDER BY 1 DESC
+      LIMIT 8
+   ),
+   ordered AS (
+      SELECT d,
+             LEAD(d) OVER (ORDER BY d desc) AS next_d
+      FROM latest_8
+   )
+   select d, 
+          next_d, 
+          datediff(d, next_d) as diff_days 
+   from ordered
+   where next_d is not null
+   ;"
+  dbGetQuery(pm_cpnm_db, sql_stmt)
 }
 
 cpnm_edi_ins <- function(pm_name_NL, 
@@ -332,7 +305,8 @@ cpnm_epi_get <- function(pm_pgm_id,
 }
 
 cpnm_uni_get <- function(pm_pgm_id, pm_max_start, pm_cpnm_db) {
-  sql_stmt <- glue_sql("select e.id as epi_id, b.dates->>'$.start' as epi_start 
+  sql_stmt <- glue_sql("select e.id as epi_id, 
+                               b.dates->>'$.start' as epi_start 
                         from entries p join entries e on e.parent_id = p.id
                                        join entries b on b.parent_id = e.id
                         where p.id = {pm_pgm_id}

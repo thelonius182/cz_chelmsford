@@ -1,6 +1,6 @@
-# - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
-# prep program clock + catalogue to link them to CPNM-id's
-# - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
+# - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - 
+# prep WoJ programme clock + catalogue to link them to CPNM-id's
+# - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - 
 pacman::p_load(tidyr, dplyr, stringr, readr, lubridate, fs, futile.logger, readxl, DBI,
                purrr, httr, jsonlite, yaml, ssh, googledrive, openxlsx, glue, uuid, RMariaDB)
 
@@ -10,7 +10,7 @@ config <- read_yaml("config.yaml")
 source("R/custom_functions.R", encoding = "UTF-8")
 
 # init logger ----
-apf <- flog.appender(appender.file(config$log_appender_file), "clof")
+apf <- flog.appender(appender.file(config$log_appender_file_wj), "clof")
 
 # Current job date (Amsterdam)
 tz_am <- "Europe/Amsterdam"
@@ -38,7 +38,7 @@ bc_week <- add_bc_cols(bc_week_ts, ts)
 # . trigger GD-auth
 drive_auth(cache = ".secrets", email = "cz.teamservice@gmail.com")
 
-# . get WoJ clock from GD
+# . get WoJ clock matrix from GD
 path_rooster_woj <- "/home/lon/R_projects/cz_chelmsford/resources/rooster_woj.xlsx"
 drive_download(file = cz_get_url("rooster_woj"), overwrite = T, path = path_rooster_woj)
 

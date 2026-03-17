@@ -1,6 +1,6 @@
-# - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
-# prep program clock + catalogue to link them to CPNM-id's
-# - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
+# - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
+# prep CZ programme clock + catalogue to link them to CPNM-id's
+# - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
 pacman::p_load(tidyr, dplyr, stringr, readr, lubridate, fs, futile.logger, readxl, DBI,
                purrr, httr, jsonlite, yaml, ssh, googledrive, openxlsx, glue, uuid, RMariaDB)
 
@@ -10,92 +10,141 @@ config <- read_yaml("config.yaml")
 source("R/custom_functions.R", encoding = "UTF-8")
 
 # init logger ----
-apf <- flog.appender(appender.file(config$log_appender_file), "clof")
-
-# Current job date (Amsterdam)
-tz_am <- "Europe/Amsterdam"
-now_am <- with_tz(Sys.time(), tz_am)
-
-# Calculate when to start: first Thursday 13:00:00 after current job date
-candidate <- update(now_am, hour = 13, minute = 0, second = 0)
-days_ahead <- (4 - wday(candidate, week_start = 1)) %% 7  # 4 = Thursday (Mon=1)
-
-if (days_ahead == 0 && candidate <= now_am) {
-  days_ahead <- 7
-}
-
-start_ts <- candidate + days(days_ahead)
-end_ts   <- start_ts + days(7)
-flog.info(str_glue("Building a clock for the WJ-week starting {logfmt_ts(start_ts)}"), name = "clof")
-
-bc_week_ts <- tibble(
-  ts = seq(from = start_ts, to = end_ts, by = "hour")
-)
-
-bc_week <- add_bc_cols(bc_week_ts, ts)
-
-# downloads GD ----
-# . trigger GD-auth
-drive_auth(cache = ".secrets", email = "cz.teamservice@gmail.com")
-
-# . get WoJ clock from GD
-path_rooster_woj <- "/home/lon/R_projects/cz_chelmsford/resources/rooster_woj.xlsx"
-drive_download(file = cz_get_url("rooster_woj"), overwrite = T, path = path_rooster_woj)
-
-# . get catalogue from GD
-path_wp_gidsinfo <- "/home/lon/R_projects/cz_chelmsford/resources/wordpress_gidsinfo.xlsx"
-drive_download(file = cz_get_url("wordpress_gidsinfo"), overwrite = T, path = path_wp_gidsinfo)
-
-# LaCies
-path_gd_lacie <- "/home/lon/R_projects/cz_chelmsford/resources/lacie.xlsx"
-drive_download(file = cz_get_url("lacie"), overwrite = T, path = path_gd_lacie)
-
-# sheets as df -----------------------------------------------------------
-tbl_raw_zenderschema_woj <- cz_extract_sheet(path_rooster_woj, sheet_name = "schedule_woj") |> select(-parent)
-tbl_zenderschema_woj <- tbl_raw_zenderschema_woj |> mutate(start = as.integer(start))
-tbl_raw_wpgidsinfo <- cz_extract_sheet(path_wp_gidsinfo, sheet_name = "gids-info")
-tbl_raw_lacie <- cz_extract_sheet(path_gd_lacie, sheet_name = "woj_herhalingen_4.2")
-
-unique_titles_wj <- tbl_zenderschema_woj |> left_join(tbl_raw_wpgidsinfo, by = join_by(broadcast_id == woj_bcid)) |> 
-  rename(genre_1 = `genre-1-NL`, genre_2 = `genre-2-NL`) |> 
-  pivot_longer(cols = c(genre_1, genre_2), names_to = NULL, values_to = "genre", values_drop_na = TRUE) |> 
-  select(titel_NL = `titel-NL`, titel_EN = `titel-EN`) |> distinct() |> arrange(titel_NL)
-
-# uniques_titles <- bind_rows(uniques_titles_cz, unique_titles_wj) |> distinct() |> arrange(titel_NL)
-
-# combine week and schedule -----------------------------------------------
-woj_schedule <- bc_week |> 
-  left_join(tbl_zenderschema_woj, 
-            by = join_by(bc_day_label == day, 
-                         bc_week_of_month == week_vd_mnd, 
-                         bc_hour_start == start)) |> 
-  filter(!is.na(slot_id))
-
-woj_schedule_w_ids.1 <- woj_schedule |> left_join(tbl_raw_wpgidsinfo, by = join_by(broadcast_id == woj_bcid)) |> 
-  rename(genre_1 = `genre-1-NL`, genre_2 = `genre-2-NL`) |> 
-  pivot_longer(cols = c(genre_1, genre_2), names_to = NULL, values_to = "genre", values_drop_na = TRUE) 
-
-woj_schedule_w_ids.2 <- woj_schedule_w_ids.1 |> 
-  select(bc_start = ts,
-         minutes,
-         titel_NL = `titel-NL`,
-         titel_EN = `titel-EN`,
-         redacteurs = `productie-1-mdw`,
-         production_role = `productie-1-taak`,
-         genre,
-         intro_NL = `std.samenvatting-NL`,
-         intro_EN = `std.samenvatting-EN`,
-         production_type = uitzendtype,
-         broadcast_type,
-         afbeelding = feat_img_ids) |> 
-  mutate(titel_nl_lc = str_to_lower(titel_NL))
-
-source("R/cpnm_db_setup.R", encoding = "UTF-8")  
+apf <- flog.appender(appender.file(config$log_appender_file_cz), "clof")
+flog.info("Building a programme clock for CZ", name = "clof")
 
 # > Main Control Loop ----
 repeat {
+  # connect to DB
+  source("R/cpnm_db_setup.R", encoding = "UTF-8")  
+  
+  # Find latest week available on the site, to know where to start the next one
+  # - `latest week`: 19:00-slots of the latest 7 days on the site
+  df_latest_week <- latest_week(pm_cpnm_db = con)
+  
+  # expect 7 consecutive dates without gaps or duplicates
+  n_rows <- nrow(df_latest_week)
+  if (n_rows != 7) {
+    flog.error("finding latest week failed: list is incomplete", name = "clof")
+    break
+  }
+  
+  has_gaps <- df_latest_week |> filter(diff_days != 1) |> nrow()
+  if (has_gaps > 0) {
+    flog.error("finding latest week failed: invalid date sequence", name = "clof")
+    break
+  }
+  
+  # define start-of-week
+  tz_am <- "Europe/Amsterdam"
+  start_ts <- force_tz(df_latest_week$d[1] + days(1), tzone = tz_am) |> update(hour = 13, minute = 0, second = 0)
+  end_ts   <- start_ts + days(7)
+  flog.info(str_glue("Clock starts Thursday {logfmt_ts(start_ts)}"), name = "clof")
+  
+  bc_week_ts <- tibble(
+    ts = seq(from = start_ts, to = end_ts, by = "hour")
+  )
+  
+  bc_week <- add_bc_cols(bc_week_ts, ts)
+  
+  # downloads GD ----
+  # . trigger GD-auth
+  drive_auth(cache = ".secrets", email = "cz.teamservice@gmail.com")
+  
+  # . get CZ clock matrix from GD
+  path_rooster_cz <- "/home/lon/R_projects/cz_chelmsford/resources/rooster_cz.xlsx"
+  drive_download(file = cz_get_url("rooster_cz"), overwrite = T, path = path_rooster_cz)
+  
+  # . get programme catalogue from GD
+  path_wp_gidsinfo <- "/home/lon/R_projects/cz_chelmsford/resources/wordpress_gidsinfo.xlsx"
+  drive_download(file = cz_get_url("wordpress_gidsinfo"), overwrite = T, path = path_wp_gidsinfo)
+
+  # sheets as df -----------------------------------------------------------
+  tbl_raw_zenderschema_cz <- cz_extract_sheet(path_rooster_cz, sheet_name = paste0("modelrooster-", config$modelrooster_versie))
+  tbl_zenderschema_cz <- tbl_raw_zenderschema_cz |> mutate(start = as.integer(start))
+  tbl_raw_wpgidsinfo <- cz_extract_sheet(path_wp_gidsinfo, sheet_name = "gids-info")
+  
+  tbl_zenderschema.1 <- tbl_zenderschema_cz |> 
+    mutate(start = str_pad(string = start, side = "left", width = 5, pad = "0"), 
+           slot = paste0(str_sub(dag, start = 1, end = 2), start)
+    ) |> 
+    rename(hh_formule = `hhOffset-dag.uur`,
+           wekelijks = `elke week`,
+           AB_cyclus = `twee-wekelijks`,
+           cyclus_A = A,
+           cyclus_B = B,
+           week_1 = `week 1`,
+           week_2 = `week 2`,
+           week_3 = `week 3`,
+           week_4 = `week 4`,
+           week_5 = `week 5`
+    ) 
+  
+  tbl_zenderschema.2 <- tbl_zenderschema.1 |>
+    select(-starts_with("r"), -starts_with("b"), -starts_with("t", ignore.case = F), -dag, -start, -Toon) |>  
+    select(slot, hh_formule, everything()) |> 
+    pivot_longer(names_to = "wanneer", cols = starts_with("week_"), values_to = "mr_key") 
+  
+  tbl_zenderschema.3 <- tbl_zenderschema.2 |> 
+    mutate(mr_key = if_else(!is.na(mr_key), mr_key, if_else(!is.na(wekelijks), wekelijks, AB_cyclus)),
+           bc_day_label = str_extract(slot, "^.."),
+           bc_week_of_month = as.integer(str_extract(wanneer, ".$")),
+           bc_hour_start = as.integer(str_extract(slot, "^..(..)", group = 1))) |> 
+    select(mr_key, starts_with("bc_"), starts_with("cyc"), hh_formule)
+  
+  # combine week and schedule -----------------------------------------------
+  cz_schedule <- bc_week |> left_join(tbl_zenderschema.3, 
+                                      by = join_by(bc_day_label, bc_week_of_month, bc_hour_start))
+  
+    tbl_zenderschema.4 <- tbl_zenderschema.3 |> 
+    left_join(tbl_raw_wpgidsinfo, by = join_by(mr_key == `key-modelrooster`)) |> 
+    select(moro_key = mr_key,
+           woj_bcid,
+           titel_NL = `titel-NL`,
+           titel_EN = `titel-EN`,
+           productie = `productie-1-taak`,
+           redacteurs = `productie-1-mdw`,
+           genre_1 = `genre-1-NL`,
+           genre_2 = `genre-2-NL`,
+           intro_NL = `std.samenvatting-NL`,
+           intro_EN = `std.samenvatting-EN`,
+           afbeelding = feat_img_ids
+    ) |> pivot_longer(cols = c(genre_1, genre_2), 
+                      names_to = NULL, 
+                      values_to = "genre", 
+                      values_drop_na = TRUE) |> arrange(moro_key) |> 
+    mutate(titel_nl_lc = str_to_lower(titel_NL))
+  
+  uniques_titles_cz <- tbl_zenderschema.4 |> select(titel_NL, titel_EN) |> distinct() |> arrange(titel_NL)
+  
+  # unique_titles_wj <- tbl_zenderschema_woj |> left_join(tbl_raw_wpgidsinfo, by = join_by(broadcast_id == woj_bcid)) |> 
+  #   rename(genre_1 = `genre-1-NL`, genre_2 = `genre-2-NL`) |> 
+  #   pivot_longer(cols = c(genre_1, genre_2), names_to = NULL, values_to = "genre", values_drop_na = TRUE) |> 
+  #   select(titel_NL = `titel-NL`, titel_EN = `titel-EN`) |> distinct() |> arrange(titel_NL)
+  
+  # uniques_titles <- bind_rows(uniques_titles_cz, unique_titles_wj) |> distinct() |> arrange(titel_NL)
+  
+  cz_schedule_w_ids.1 <- cz_schedule |> left_join(tbl_raw_wpgidsinfo, by = join_by(broadcast_id == woj_bcid)) |> 
+    rename(genre_1 = `genre-1-NL`, genre_2 = `genre-2-NL`) |> 
+    pivot_longer(cols = c(genre_1, genre_2), names_to = NULL, values_to = "genre", values_drop_na = TRUE) 
+  
+  cz_schedule_w_ids.2 <- cz_schedule_w_ids.1 |> 
+    select(bc_start = ts,
+           minutes,
+           titel_NL = `titel-NL`,
+           titel_EN = `titel-EN`,
+           redacteurs = `productie-1-mdw`,
+           production_role = `productie-1-taak`,
+           genre,
+           intro_NL = `std.samenvatting-NL`,
+           intro_EN = `std.samenvatting-EN`,
+           production_type = uitzendtype,
+           broadcast_type,
+           afbeelding = feat_img_ids) |> 
+    mutate(titel_nl_lc = str_to_lower(titel_NL))
+  
   # validate gids-info ----
-  missing_gi <- woj_schedule_w_ids.1 |> filter(is.na(`key-modelrooster`)) |> nrow()
+  missing_gi <- cz_schedule_w_ids.1 |> filter(is.na(`key-modelrooster`)) |> nrow()
   
   if (missing_gi > 0) {
     flog.error("gidsinfo is incomplete; quiting this job.", name = "clof")
@@ -113,10 +162,10 @@ repeat {
             ;"
   
   ty_genres <- dbGetQuery(con, query)
-  woj_schedule_w_ids.3 <- woj_schedule_w_ids.2 |> left_join(ty_genres, by = join_by(genre == genre_NL))
-  woj_schedule_w_ids_missing <- woj_schedule_w_ids.3 |> filter(is.na(ty_genre_id))
+  cz_schedule_w_ids.3 <- cz_schedule_w_ids.2 |> left_join(ty_genres, by = join_by(genre == genre_NL))
+  cz_schedule_w_ids_missing <- cz_schedule_w_ids.3 |> filter(is.na(ty_genre_id))
   
-  if (nrow(woj_schedule_w_ids_missing) > 0) {
+  if (nrow(cz_schedule_w_ids_missing) > 0) {
     flog.error("genres missing in the taxonomy; quiting this job.", name = "clof")
     break
   }
@@ -129,11 +178,11 @@ repeat {
             order by 1
             ;"
   ty_editors <- dbGetQuery(con, query)
-  woj_schedule_w_ids.4 <- woj_schedule_w_ids.3 |> 
+  cz_schedule_w_ids.4 <- cz_schedule_w_ids.3 |> 
     left_join(ty_editors, by = join_by("redacteurs" == "editor_name"))
-  woj_schedule_w_ids_missing <- woj_schedule_w_ids.4 |> filter(is.na(ty_editor_id)) |> select(redacteurs) |> distinct()
+  cz_schedule_w_ids_missing <- cz_schedule_w_ids.4 |> filter(is.na(ty_editor_id)) |> select(redacteurs) |> distinct()
   
-  if (nrow(woj_schedule_w_ids_missing) > 0) {
+  if (nrow(cz_schedule_w_ids_missing) > 0) {
     flog.error("editors missing in the taxonomy; quiting this job.", name = "clof")
     break
   }
@@ -158,21 +207,21 @@ repeat {
   )
   select titel_nl_lc, pgm_id from ds3 where rn = 1 order by 1;"
   program_titles <- dbGetQuery(con, query)
-  woj_schedule_w_ids.5 <- woj_schedule_w_ids.4 |> 
+  cz_schedule_w_ids.5 <- cz_schedule_w_ids.4 |> 
     left_join(program_titles, by = join_by("titel_nl_lc"))
-  woj_schedule_w_ids_missing <- woj_schedule_w_ids.5 |> filter(is.na(pgm_id))
+  cz_schedule_w_ids_missing <- cz_schedule_w_ids.5 |> filter(is.na(pgm_id))
   
-  if (nrow(woj_schedule_w_ids_missing) > 0) {
+  if (nrow(cz_schedule_w_ids_missing) > 0) {
     flog.error("programs missing in 'entries'; quiting this job.", name = "clof")
     break
   }
   
   # check length ----
-  wi_tot_minutes <- woj_schedule_w_ids.5 |> distinct(bc_start, minutes) |> mutate(total_minutes = sum(minutes)) |> 
+  wi_tot_minutes <- cz_schedule_w_ids.5 |> distinct(bc_start, minutes) |> mutate(total_minutes = sum(minutes)) |> 
     head(1) |> select(total_minutes) |> pull()
   
   if (wi_tot_minutes != 10080L) {
-    flog.error(str_glue("woj_schedule: expected 10080 minutes, but got {wi_tot_minutes}; quiting this job."), name = "clof")
+    flog.error(str_glue("cz_schedule: expected 10080 minutes, but got {wi_tot_minutes}; quiting this job."), name = "clof")
     break
   }
   
@@ -181,35 +230,35 @@ repeat {
   tbl_lacie <- tbl_raw_lacie |> filter(!is.na(bc_woj_ts)) |>  # remove fully empty lines
     mutate(bc_woj_ts = force_tz(bc_woj_ts, tzone = "Europe/Amsterdam"),
            replay_of = force_tz(replay_of, "Europe/Amsterdam"))
-  woj_schedule_w_ids.6 <- woj_schedule_w_ids.5 |> left_join(tbl_lacie, by = join_by(bc_start == bc_woj_ts)) |> 
+  cz_schedule_w_ids.6 <- cz_schedule_w_ids.5 |> left_join(tbl_lacie, by = join_by(bc_start == bc_woj_ts)) |> 
     select(bc_start:pgm_id, replay_of_ts = replay_of) |> mutate(replay_of_epi_id = NA_character_)
   fmt_ts <- stamp("1958-12-25 13:00:00", quiet = T, orders = "ymd HMS")
   
-  for (rn in seq_len(nrow(woj_schedule_w_ids.6))) {
+  for (rn in seq_len(nrow(cz_schedule_w_ids.6))) {
     
-    if (woj_schedule_w_ids.6$broadcast_type[rn] != "LaCie") {
+    if (cz_schedule_w_ids.6$broadcast_type[rn] != "LaCie") {
       next
     }
-      
-    if (is.na(woj_schedule_w_ids.6$replay_of_ts[rn])) {
+    
+    if (is.na(cz_schedule_w_ids.6$replay_of_ts[rn])) {
       next
     }
-
-    df_replay <- cpnm_epi_get(pm_pgm_id = woj_schedule_w_ids.6$pgm_id[rn],
-                              pm_start = fmt_ts(woj_schedule_w_ids.6$replay_of_ts[rn]),
+    
+    df_replay <- cpnm_epi_get(pm_pgm_id = cz_schedule_w_ids.6$pgm_id[rn],
+                              pm_start = fmt_ts(cz_schedule_w_ids.6$replay_of_ts[rn]),
                               pm_cpnm_db = con)
     
     if (is.na(df_replay$epi_id)) {
       next
     }
     
-    woj_schedule_w_ids.6$replay_of_epi_id[rn] <- df_replay$epi_id
+    cz_schedule_w_ids.6$replay_of_epi_id[rn] <- df_replay$epi_id
   }
   
   # . check complete ----
-  woj_schedule_w_ids_missing <- woj_schedule_w_ids.6 |> filter(broadcast_type == "LaCie" & is.na(replay_of_epi_id))
+  cz_schedule_w_ids_missing <- cz_schedule_w_ids.6 |> filter(broadcast_type == "LaCie" & is.na(replay_of_epi_id))
   
-  if (nrow(woj_schedule_w_ids_missing) > 0) {
+  if (nrow(cz_schedule_w_ids_missing) > 0) {
     flog.error("LaCie-replays are incomplete; quiting this job.", name = "clof")
     break
   }
@@ -222,63 +271,63 @@ repeat {
   # NB.1 - production-type = e.g. upload, montage, live
   #        broadcast-type  = LaCie, NonStop, Universe, WorldOfJazz, ReplayWoJ
   # NB.2 - for Universe broadcasts, the production type is the type on CZ, not the one on WJ
-  for (rn in seq_len(nrow(woj_schedule_w_ids.6))) {
+  for (rn in seq_len(nrow(cz_schedule_w_ids.6))) {
     
-    if (woj_schedule_w_ids.6$broadcast_type[rn] != "Universe") {
+    if (cz_schedule_w_ids.6$broadcast_type[rn] != "Universe") {
       next
     }
-
-    pm_max_start <- if (woj_schedule_w_ids.6$production_type[rn] == "live") start_ts else woj_schedule_w_ids.6$bc_start[rn]
-    df_replay <- cpnm_uni_get(pm_pgm_id = woj_schedule_w_ids.6$pgm_id[rn],
+    
+    pm_max_start <- if (cz_schedule_w_ids.6$production_type[rn] == "live") start_ts else cz_schedule_w_ids.6$bc_start[rn]
+    df_replay <- cpnm_uni_get(pm_pgm_id = cz_schedule_w_ids.6$pgm_id[rn],
                               pm_max_start,
                               pm_cpnm_db = con)
-
+    
     if (is.na(df_replay$epi_id)) {
       next
     }
     
-    woj_schedule_w_ids.6$replay_of_epi_id[rn] <- df_replay$epi_id
-    woj_schedule_w_ids.6$replay_of_ts[rn] <- df_replay$epi_start
+    cz_schedule_w_ids.6$replay_of_epi_id[rn] <- df_replay$epi_id
+    cz_schedule_w_ids.6$replay_of_ts[rn] <- df_replay$epi_start
   }
   
   # . check complete ----
-  woj_schedule_w_ids_missing <- woj_schedule_w_ids.6 |> filter(broadcast_type == "Universe" & is.na(replay_of_epi_id))
+  cz_schedule_w_ids_missing <- cz_schedule_w_ids.6 |> filter(broadcast_type == "Universe" & is.na(replay_of_epi_id))
   
-  if (nrow(woj_schedule_w_ids_missing) > 0) {
+  if (nrow(cz_schedule_w_ids_missing) > 0) {
     flog.error("Universe-replays are incomplete; quiting this job.", name = "clof")
     break
   }
   
   # Replays ----
   # - these are replays of native WJ-programs on WJ, but otherwise this works just like Universe
-  for (rn in seq_len(nrow(woj_schedule_w_ids.6))) {
+  for (rn in seq_len(nrow(cz_schedule_w_ids.6))) {
     
-    if (woj_schedule_w_ids.6$broadcast_type[rn] != "ReplayWoJ") {
+    if (cz_schedule_w_ids.6$broadcast_type[rn] != "ReplayWoJ") {
       next
     }
     
-    df_replay <- cpnm_uni_get(pm_pgm_id = woj_schedule_w_ids.6$pgm_id[rn],
-                              pm_max_start = woj_schedule_w_ids.6$bc_start[rn],
+    df_replay <- cpnm_uni_get(pm_pgm_id = cz_schedule_w_ids.6$pgm_id[rn],
+                              pm_max_start = cz_schedule_w_ids.6$bc_start[rn],
                               pm_cpnm_db = con)
     
     if (is.na(df_replay$epi_id)) {
       next
     }
     
-    woj_schedule_w_ids.6$replay_of_epi_id[rn] <- df_replay$epi_id
-    woj_schedule_w_ids.6$replay_of_ts[rn] <- df_replay$epi_start
+    cz_schedule_w_ids.6$replay_of_epi_id[rn] <- df_replay$epi_id
+    cz_schedule_w_ids.6$replay_of_ts[rn] <- df_replay$epi_start
   }
   
   # . check complete ----
-  woj_schedule_w_ids_missing <- woj_schedule_w_ids.6 |> filter(broadcast_type == "Universe" & is.na(replay_of_epi_id))
+  cz_schedule_w_ids_missing <- cz_schedule_w_ids.6 |> filter(broadcast_type == "Universe" & is.na(replay_of_epi_id))
   
-  if (nrow(woj_schedule_w_ids_missing) > 0) {
+  if (nrow(cz_schedule_w_ids_missing) > 0) {
     flog.error("WorldOfJazz-replays are incomplete; quiting this job.", name = "clof")
     break
   }
   
   # Images ----
-  df_afb <- woj_schedule_w_ids.6 |> filter(!is.na(afbeelding)) |> select(afbeelding) |> distinct() |> 
+  df_afb <- cz_schedule_w_ids.6 |> filter(!is.na(afbeelding)) |> select(afbeelding) |> distinct() |> 
     mutate(afbeelding = as.integer(afbeelding), image_id = NA_character_) |> arrange(afbeelding)
   
   for (rn in seq_len(nrow(df_afb))) {
@@ -292,15 +341,15 @@ repeat {
   }
   
   # . check complete ----
-  woj_schedule_w_ids_missing <- df_afb |> filter(is.na(image_id))
+  cz_schedule_w_ids_missing <- df_afb |> filter(is.na(image_id))
   
-  if (nrow(woj_schedule_w_ids_missing) > 0) {
+  if (nrow(cz_schedule_w_ids_missing) > 0) {
     flog.error("WorldOfJazz images are incomplete; quiting this job.", name = "clof")
     break
   }
   
   # . append ----
-  woj_schedule_w_ids.6 <- woj_schedule_w_ids.6 |> left_join(df_afb, by = join_by(afbeelding))
+  cz_schedule_w_ids.6 <- cz_schedule_w_ids.6 |> left_join(df_afb, by = join_by(afbeelding))
   
   # check latest slot ----
   df_slots <- cpnm_chk_slots(pm_site_id = 2, pm_cpnm_db = con) |> 
@@ -314,33 +363,33 @@ repeat {
   # Build new WJ-week ----
   # - some programs have 2 main genres, so have 2 records; treat them separately: 7a for all columns,
   #   and 7b just for the extra genre
-  woj_schedule_w_ids.7 <- woj_schedule_w_ids.6 |> group_by(bc_start) |> mutate(sch_item = row_number()) |> ungroup()
-  woj_schedule_w_ids.7a <- woj_schedule_w_ids.7 |> filter(sch_item == 1)
-  woj_schedule_w_ids.7b <- woj_schedule_w_ids.7 |> filter(sch_item == 2)
+  cz_schedule_w_ids.7 <- cz_schedule_w_ids.6 |> group_by(bc_start) |> mutate(sch_item = row_number()) |> ungroup()
+  cz_schedule_w_ids.7a <- cz_schedule_w_ids.7 |> filter(sch_item == 1)
+  cz_schedule_w_ids.7b <- cz_schedule_w_ids.7 |> filter(sch_item == 2)
   
-  for (rn in seq_len(nrow(woj_schedule_w_ids.7a))) {
+  for (rn in seq_len(nrow(cz_schedule_w_ids.7a))) {
     # temp exception
     if (rn %in% c(1, 2)) next
     # temp exception
-    if (is.na(woj_schedule_w_ids.7a$replay_of_epi_id[rn])) {
+    if (is.na(cz_schedule_w_ids.7a$replay_of_epi_id[rn])) {
       # . fresh episode & broadcast ----
-      fresh_epi_bc <- cpnm_epi_bc_ins(pm_pgm_id = woj_schedule_w_ids.7a$pgm_id[rn],
-                                      pm_descr_NL = woj_schedule_w_ids.7a$intro_NL[rn],
-                                      pm_descr_EN = woj_schedule_w_ids.7a$intro_EN[rn],
-                                      pm_img_id = woj_schedule_w_ids.7a$image_id[rn],
+      fresh_epi_bc <- cpnm_epi_bc_ins(pm_pgm_id = cz_schedule_w_ids.7a$pgm_id[rn],
+                                      pm_descr_NL = cz_schedule_w_ids.7a$intro_NL[rn],
+                                      pm_descr_EN = cz_schedule_w_ids.7a$intro_EN[rn],
+                                      pm_img_id = cz_schedule_w_ids.7a$image_id[rn],
                                       pm_site_id = wj_site_id,
-                                      pm_bc_start = woj_schedule_w_ids.7a$bc_start[rn],
-                                      pm_bc_minutes = woj_schedule_w_ids.7a$minutes[rn],
+                                      pm_bc_start = cz_schedule_w_ids.7a$bc_start[rn],
+                                      pm_bc_minutes = cz_schedule_w_ids.7a$minutes[rn],
                                       pm_cpnm_db = con)
       # . genre ----
       # - add an `episode` taxonomable record for first genre
       txb_res <- cpnm_txb_ins(pm_epi_id = fresh_epi_bc,
-                              pm_txy_id = woj_schedule_w_ids.7a$ty_genre_id[rn],
+                              pm_txy_id = cz_schedule_w_ids.7a$ty_genre_id[rn],
                               pm_order = 1,
                               pm_cpnm_db = con)
       
       # - add an `episode` taxonomable record for second genre
-      df_g2 <- woj_schedule_w_ids.7b |> filter(bc_start == woj_schedule_w_ids.7a$bc_start[rn])
+      df_g2 <- cz_schedule_w_ids.7b |> filter(bc_start == cz_schedule_w_ids.7a$bc_start[rn])
       
       if (nrow(df_g2) == 1) {
         txb_res <- cpnm_txb_ins(pm_epi_id = fresh_epi_bc,
@@ -352,20 +401,20 @@ repeat {
       # . editor ----
       # - add an `episode` taxonomable record for editors and production-role (txy-type colofon)
       txb_res <- cpnm_txb_edi_ins(pm_epi_id = fresh_epi_bc,
-                                  pm_txy_id = woj_schedule_w_ids.7a$ty_editor_id[rn],
-                                  pm_role_NL = woj_schedule_w_ids.7a$production_role[rn],
+                                  pm_txy_id = cz_schedule_w_ids.7a$ty_editor_id[rn],
+                                  pm_role_NL = cz_schedule_w_ids.7a$production_role[rn],
                                   pm_cpnm_db = con)
     } else {
       # . replay ----
-      bc_replay_res <- cpnm_bc_ins(pm_pgm_id = woj_schedule_w_ids.7a$pgm_id[rn],
-                                   pm_epi_id = woj_schedule_w_ids.7a$replay_of_epi_id[rn],
+      bc_replay_res <- cpnm_bc_ins(pm_pgm_id = cz_schedule_w_ids.7a$pgm_id[rn],
+                                   pm_epi_id = cz_schedule_w_ids.7a$replay_of_epi_id[rn],
                                    pm_site_id = wj_site_id,
-                                   pm_bc_start = woj_schedule_w_ids.7a$bc_start[rn],
-                                   pm_bc_minutes = woj_schedule_w_ids.7a$minutes[rn],
+                                   pm_bc_start = cz_schedule_w_ids.7a$bc_start[rn],
+                                   pm_bc_minutes = cz_schedule_w_ids.7a$minutes[rn],
                                    pm_cpnm_db = con)
     }
   }
-   
+  
   # exit MCL
   break
 }
@@ -373,4 +422,4 @@ repeat {
 # Cleanup ----
 dbDisconnect(con)
 close_tunnel(tunnel)
-flog.info("Clockfactory WJ: job finished", name = "clof")
+flog.info("Clockfactory CZ: job finished", name = "clof")

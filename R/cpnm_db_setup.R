@@ -1,3 +1,61 @@
+# - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
+# Implement connection to the CPNM database inside an SSH-tunnel
+# - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
+wait_for_tunnel <- function(tunnel,
+                            t_host,
+                            t_port,
+                            total_timeout = 10,
+                            poll_interval = 0.2) {
+  start_time <- Sys.time()
+  
+  repeat {
+    if (!tunnel$is_alive()) {
+      err <- tunnel$read_all_error()
+      stop(
+        "SSH tunnel process exited before becoming ready.\n",
+        if (has_value(err)) err else "No SSH error output captured."
+      )
+    }
+    
+    con <- suppressWarnings(
+      try(
+        socketConnection(
+          host = t_host,
+          port = t_port,
+          open = "r",
+          timeout = 1
+        ),
+        silent = TRUE
+      )
+    )
+    
+    if (!inherits(con, "try-error")) {
+      close(con)
+      return(invisible(TRUE))
+    }
+    
+    elapsed <- as.numeric(
+      difftime(Sys.time(), start_time, units = "secs")
+    )
+    
+    if (elapsed > total_timeout) {
+      stop("Setting up the SSH tunnel failed.")
+    }
+    
+    Sys.sleep(poll_interval)
+  }
+}
+
+close_tunnel <- function(tunnel) {
+  
+  if (!is.null(tunnel) && tunnel$is_alive()) {
+    tunnel$kill()
+    tunnel$wait(timeout = 2000)
+  }
+  
+  invisible(NULL)
+}
+
 # prepare tunnel+db-settings ----
 env_tun_auth <- Sys.getenv("CPNM_TUNNEL_AUTH_UBU")
 if (!has_value(env_tun_auth)) stop("Missing (Ubuntu-)authentication for SSH-tunnel to CPNM")
