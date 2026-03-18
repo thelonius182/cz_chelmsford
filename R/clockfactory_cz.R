@@ -1,25 +1,25 @@
-# - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
-# prep CZ programme clock + catalogue to link them to CPNM-id's
-# - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
+# - - - - - - - - - - - - - - - - - - -
+# Build this week's CZ programme clock
+# - - - - - - - - - - - - - - - - - - -
 pacman::p_load(tidyr, dplyr, stringr, readr, lubridate, fs, futile.logger, readxl, DBI,
                purrr, httr, jsonlite, yaml, ssh, googledrive, openxlsx, glue, uuid, RMariaDB)
 
-cz_site_id <- 1L
-wj_site_id <- 2L
+# init ----
 config <- read_yaml("config.yaml")
-source("R/custom_functions.R", encoding = "UTF-8")
-
-# init logger ----
 apf <- flog.appender(appender.file(config$log_appender_file_cz), "clof")
 flog.info("Building a programme clock for CZ", name = "clof")
+cz_site_id <- 1L
+wj_site_id <- 2L
+source("R/custom_functions.R", encoding = "UTF-8")
 
 # > Main Control Loop ----
 repeat {
   # connect to DB
   source("R/cpnm_db_setup.R", encoding = "UTF-8")  
   
-  # Find latest week available on the site, to know where to start the next one
-  # - `latest week`: 19:00-slots of the latest 7 days on the site
+  # Find latest week ----
+  # ... available on the site, to know where to start the next one
+  # `latest week`: 19:00-slots of the latest 7 days on the site
   df_latest_week <- latest_week(pm_cpnm_db = con)
   
   # expect 7 consecutive dates without gaps or duplicates
@@ -35,14 +35,14 @@ repeat {
     break
   }
   
-  # define start-of-week
+  # assign start/stop-of-week ----
   tz_am <- "Europe/Amsterdam"
   start_ts <- force_tz(df_latest_week$d[1] + days(1), tzone = tz_am) |> update(hour = 13, minute = 0, second = 0)
-  end_ts   <- start_ts + days(7)
-  flog.info(str_glue("Clock starts Thursday {logfmt_ts(start_ts)}"), name = "clof")
+  stop_ts   <- start_ts + days(7)
+  flog.info(str_glue("Clock will run Thursday {logfmt_ts(start_ts)} to {logfmt_ts(stop_ts)}"), name = "clof")
   
   bc_week_ts <- tibble(
-    ts = seq(from = start_ts, to = end_ts, by = "hour")
+    ts = seq(from = start_ts, to = stop_ts - hours(1), by = "hour")
   )
   
   bc_week <- add_bc_cols(bc_week_ts, ts)
@@ -85,18 +85,37 @@ repeat {
     select(slot, hh_formule, everything()) |> 
     pivot_longer(names_to = "wanneer", cols = starts_with("week_"), values_to = "mr_key") 
   
+  cur_week_label <- week_label(date(start_ts))
+  
   tbl_zenderschema.3 <- tbl_zenderschema.2 |> 
     mutate(mr_key = if_else(!is.na(mr_key), mr_key, if_else(!is.na(wekelijks), wekelijks, AB_cyclus)),
+           bc_minutes = as.integer(str_extract(slot, "\\d{3}$")),
            bc_day_label = str_extract(slot, "^.."),
-           bc_week_of_month = as.integer(str_extract(wanneer, ".$")),
-           bc_hour_start = as.integer(str_extract(slot, "^..(..)", group = 1))) |> 
-    select(mr_key, starts_with("bc_"), starts_with("cyc"), hh_formule)
+           bc_week_of_month = as.integer(str_extract(wanneer, "\\d$")),
+           bc_hour_start = as.integer(str_extract(slot, "^..(\\d{2})", group = 1)),
+           cycle_vec = cur_week_label,
+           bc_cycle = if_else(cycle_vec == "A", cyclus_A, cyclus_B)) |> 
+    select(mr_key, starts_with("bc_"), hh_formule)
   
-  # combine week and schedule -----------------------------------------------
-  cz_schedule <- bc_week |> left_join(tbl_zenderschema.3, 
-                                      by = join_by(bc_day_label, bc_week_of_month, bc_hour_start))
+  # combine week and schedule ----
+  cz_schedule.1 <- bc_week |> left_join(tbl_zenderschema.3, 
+                                      by = join_by(bc_day_label, bc_week_of_month, bc_hour_start)) |> 
+    mutate(hh_start = as.integer(str_extract(hh_formule, "(\\d{2}).$", group = 1)),
+           hh_start = if_else(hh_formule == "tw", bc_hour_start, hh_start),
+           hh_day = str_extract(hh_formule, "^..(..)", group = 1),
+           hh_day = if_else(hh_formule == "tw", bc_day_label, hh_day),
+           hh_day = if_else(hh_day == "do", if_else(hh_start >= 13, "do1", "do2"), hh_day),
+           bc_day_label = if_else(bc_day_label == "do", if_else(bc_hour_start >= 13, "do1", "do2"), bc_day_label),
+           hh_offset = case_when(is.na(hh_formule) ~ NA_integer_,
+                                 hh_formule == "tw" ~ 7L,
+                                 TRUE ~ as.integer(str_extract(hh_formule, "^\\d{2}"))))
   
-    tbl_zenderschema.4 <- tbl_zenderschema.3 |> 
+  df_bc_dates <- cz_schedule.1 |> mutate(bc_date = date(ts)) |> select(bc_day_label, bc_date) |> distinct()
+  cz_schedule.2 <- cz_schedule.1 |> left_join(df_bc_dates, by = join_by(hh_day == bc_day_label))
+  df_replays <- cz_schedule.2 |> filter(!is.na(hh_formule) & (bc_cycle == "h" | is.na(bc_cycle))) |> 
+    mutate(bc_date_offset = bc_date - days(hh_offset))
+  
+  tbl_zenderschema.4 <- tbl_zenderschema.3 |> 
     left_join(tbl_raw_wpgidsinfo, by = join_by(mr_key == `key-modelrooster`)) |> 
     select(moro_key = mr_key,
            woj_bcid,

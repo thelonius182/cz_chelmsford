@@ -43,15 +43,11 @@ logfmt_ts <- function(x) {
 
 # Infer the bi-weekly cycle (A or B) for the current CZ-broadcast week (Thu-Thu).
 # 'x' is expected to be Thursday-start-of-week
-week_label <- function(x) {
-  # test a Friday: x <- "2025-12-19" 
-  ymd_x <- ymd(x)
-  if (is.na(ymd_x)) stop(str_glue("expected: a valid ymd date string. Got: {x}"))
-  a_Monday <- 1L
-  wd_x <- wday(ymd_x, week_start = a_Monday)
-  if (wd_x != 4) stop(str_glue("expected: 4 = Thursday. Got: {wd_x}"))
+week_label <- function(start_of_week) {
+  mondays <- 1L
+  wd_start_of_week <- wday(start_of_week, week_start = mondays)
   ref_date_B_cycle <- ymd("2019-10-17")
-  n_weeks <- as.integer(ymd_x - ref_date_B_cycle) %/% 7
+  n_weeks <- as.integer(start_of_week - ref_date_B_cycle) %/% 7
   if (n_weeks %% 2 == 0) "B" else "A"
 }
 
