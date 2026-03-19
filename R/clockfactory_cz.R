@@ -61,10 +61,10 @@ repeat {
 
   # sheets as df -----------------------------------------------------------
   tbl_raw_zenderschema_cz <- cz_extract_sheet(path_rooster_cz, sheet_name = paste0("modelrooster-", config$modelrooster_versie))
-  tbl_zenderschema_cz <- tbl_raw_zenderschema_cz |> mutate(start = as.integer(start))
+  df_clock_cz_cz <- tbl_raw_zenderschema_cz |> mutate(start = as.integer(start))
   tbl_raw_wpgidsinfo <- cz_extract_sheet(path_wp_gidsinfo, sheet_name = "gids-info")
   
-  tbl_zenderschema.1 <- tbl_zenderschema_cz |> 
+  df_clock_cz.1 <- df_clock_cz_cz |> 
     mutate(start = str_pad(string = start, side = "left", width = 5, pad = "0"), 
            slot = paste0(str_sub(dag, start = 1, end = 2), start)
     ) |> 
@@ -80,14 +80,14 @@ repeat {
            week_5 = `week 5`
     ) 
   
-  tbl_zenderschema.2 <- tbl_zenderschema.1 |>
+  df_clock_cz.2 <- df_clock_cz.1 |>
     select(-starts_with("r"), -starts_with("b"), -starts_with("t", ignore.case = F), -dag, -start, -Toon) |>  
     select(slot, hh_formule, everything()) |> 
     pivot_longer(names_to = "wanneer", cols = starts_with("week_"), values_to = "mr_key") 
   
   cur_week_label <- week_label(date(start_ts))
   
-  tbl_zenderschema.3 <- tbl_zenderschema.2 |> 
+  df_clock_cz.3 <- df_clock_cz.2 |> 
     mutate(mr_key = if_else(!is.na(mr_key), mr_key, if_else(!is.na(wekelijks), wekelijks, AB_cyclus)),
            bc_minutes = as.integer(str_extract(slot, "\\d{3}$")),
            bc_day_label = str_extract(slot, "^.."),
@@ -98,29 +98,24 @@ repeat {
     select(mr_key, starts_with("bc_"), hh_formule)
   
   # combine week and schedule ----
-  cz_schedule.1 <- bc_week |> left_join(tbl_zenderschema.3, 
+  df_clock_cz.4 <- bc_week |> left_join(df_clock_cz.3, 
                                       by = join_by(bc_day_label, bc_week_of_month, bc_hour_start)) |> 
     mutate(hh_start = as.integer(str_extract(hh_formule, "(\\d{2}).$", group = 1)),
            hh_start = if_else(hh_formule == "tw", bc_hour_start, hh_start),
            hh_day = str_extract(hh_formule, "^..(..)", group = 1),
            hh_day = if_else(hh_formule == "tw", bc_day_label, hh_day),
-           # hh_day = if_else(hh_day == "do", if_else(hh_start >= 13, "do1", "do2"), hh_day),
-           # bc_day_label = if_else(bc_day_label == "do", if_else(bc_hour_start >= 13, "do1", "do2"), bc_day_label),
            hh_offset = case_when(is.na(hh_formule) ~ NA_integer_,
                                  hh_formule == "tw" ~ 7L,
                                  TRUE ~ as.integer(str_extract(hh_formule, "^\\d{2}"))))
-  
-  df_rpl_on_dates <- cz_schedule.1 |> mutate(rpl_on_ymd = date(ts),
-                                             rpl_of_ymd = rpl_on_ymd - days(hh_offset)) |> 
-    select(rpl_on_day_label = hh_day, rpl_on_start = hh_start, rpl_on_ymd, 
-           rpl_of_mr_key = mr_key, rpl_of_ymd, rpl_of_minutes = bc_minutes) |> 
-    filter(!is.na(rpl_on_day_label))
-    
-  cz_schedule.2 <- cz_schedule.1 |> left_join(df_rpl_on_dates, by = join_by(hh_day == bc_day_label, hh_start == bc_hour_start))
-  df_replays <- cz_schedule.2 |> filter(!is.na(hh_formule) & (bc_cycle == "h" | is.na(bc_cycle))) |> 
-    mutate(bc_date_offset = bc_date - days(hh_offset))
-  
-  tbl_zenderschema.4 <- tbl_zenderschema.3 |> 
+  cz_weekdays <- c("ma", "di", "wo", "do", "vr", "za", "zo")
+  df_replays <- df_clock_cz.4 |> filter(!is.na(hh_formule) & (bc_cycle == "h" | is.na(bc_cycle))) |> 
+    select(replay_on_day = hh_day, replay_on_start = hh_start) |> 
+    arrange(factor(replay_on_day, levels = cz_weekdays, ordered = TRUE))
+
+  df_replays_to_add <- df_replays |> 
+    left_join(df_clock_cz.4, by = join_by(replay_on_day == bc_day_label, replay_on_start == bc_hour_start))
+
+  df_clock_cz.5 <- df_clock_cz.4 |> 
     left_join(tbl_raw_wpgidsinfo, by = join_by(mr_key == `key-modelrooster`)) |> 
     select(moro_key = mr_key,
            woj_bcid,
@@ -139,9 +134,9 @@ repeat {
                       values_drop_na = TRUE) |> arrange(moro_key) |> 
     mutate(titel_nl_lc = str_to_lower(titel_NL))
   
-  uniques_titles_cz <- tbl_zenderschema.4 |> select(titel_NL, titel_EN) |> distinct() |> arrange(titel_NL)
+  uniques_titles_cz <- df_clock_cz.4 |> select(titel_NL, titel_EN) |> distinct() |> arrange(titel_NL)
   
-  # unique_titles_wj <- tbl_zenderschema_woj |> left_join(tbl_raw_wpgidsinfo, by = join_by(broadcast_id == woj_bcid)) |> 
+  # unique_titles_wj <- df_clock_cz_woj |> left_join(tbl_raw_wpgidsinfo, by = join_by(broadcast_id == woj_bcid)) |> 
   #   rename(genre_1 = `genre-1-NL`, genre_2 = `genre-2-NL`) |> 
   #   pivot_longer(cols = c(genre_1, genre_2), names_to = NULL, values_to = "genre", values_drop_na = TRUE) |> 
   #   select(titel_NL = `titel-NL`, titel_EN = `titel-EN`) |> distinct() |> arrange(titel_NL)
