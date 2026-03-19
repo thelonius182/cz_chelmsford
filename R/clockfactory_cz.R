@@ -1,10 +1,10 @@
 # - - - - - - - - - - - - - - - - - - -
 # Build this week's CZ programme clock
 # - - - - - - - - - - - - - - - - - - -
-pacman::p_load(tidyr, dplyr, stringr, readr, lubridate, fs, futile.logger, readxl, DBI,
-               purrr, httr, jsonlite, yaml, ssh, googledrive, openxlsx, glue, uuid, RMariaDB)
 
 # init ----
+pacman::p_load(tidyr, dplyr, stringr, readr, lubridate, fs, futile.logger, readxl, DBI,
+               purrr, httr, jsonlite, yaml, ssh, googledrive, openxlsx, glue, uuid, RMariaDB)
 config <- read_yaml("config.yaml")
 apf <- flog.appender(appender.file(config$log_appender_file_cz), "clof")
 flog.info("Building a programme clock for CZ", name = "clof")
@@ -104,14 +104,19 @@ repeat {
            hh_start = if_else(hh_formule == "tw", bc_hour_start, hh_start),
            hh_day = str_extract(hh_formule, "^..(..)", group = 1),
            hh_day = if_else(hh_formule == "tw", bc_day_label, hh_day),
-           hh_day = if_else(hh_day == "do", if_else(hh_start >= 13, "do1", "do2"), hh_day),
-           bc_day_label = if_else(bc_day_label == "do", if_else(bc_hour_start >= 13, "do1", "do2"), bc_day_label),
+           # hh_day = if_else(hh_day == "do", if_else(hh_start >= 13, "do1", "do2"), hh_day),
+           # bc_day_label = if_else(bc_day_label == "do", if_else(bc_hour_start >= 13, "do1", "do2"), bc_day_label),
            hh_offset = case_when(is.na(hh_formule) ~ NA_integer_,
                                  hh_formule == "tw" ~ 7L,
                                  TRUE ~ as.integer(str_extract(hh_formule, "^\\d{2}"))))
   
-  df_bc_dates <- cz_schedule.1 |> mutate(bc_date = date(ts)) |> select(bc_day_label, bc_date) |> distinct()
-  cz_schedule.2 <- cz_schedule.1 |> left_join(df_bc_dates, by = join_by(hh_day == bc_day_label))
+  df_rpl_on_dates <- cz_schedule.1 |> mutate(rpl_on_ymd = date(ts),
+                                             rpl_of_ymd = rpl_on_ymd - days(hh_offset)) |> 
+    select(rpl_on_day_label = hh_day, rpl_on_start = hh_start, rpl_on_ymd, 
+           rpl_of_mr_key = mr_key, rpl_of_ymd, rpl_of_minutes = bc_minutes) |> 
+    filter(!is.na(rpl_on_day_label))
+    
+  cz_schedule.2 <- cz_schedule.1 |> left_join(df_rpl_on_dates, by = join_by(hh_day == bc_day_label, hh_start == bc_hour_start))
   df_replays <- cz_schedule.2 |> filter(!is.na(hh_formule) & (bc_cycle == "h" | is.na(bc_cycle))) |> 
     mutate(bc_date_offset = bc_date - days(hh_offset))
   
