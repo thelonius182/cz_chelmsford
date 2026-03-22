@@ -331,3 +331,18 @@ cpnm_chk_slots <- function(pm_site_id, pm_cpnm_db) {
                        .con = pm_cpnm_db)
   sql_res <- dbGetQuery(pm_cpnm_db, sql_stmt)
 }
+
+cpnm_chk_cz_rp <- function(pm_ts, pm_pgm_id, pm_cpnm_db) {
+  sql_stmt <- glue_sql("SELECT g.id AS pgm_id
+                        FROM entries AS b
+                        JOIN entries AS p ON p.id = b.parent_id
+                        JOIN entries AS g ON g.id = p.parent_id
+                        WHERE b.type = 'broadcast'
+                          AND b.site_id = 1
+                          AND CAST(JSON_UNQUOTE(JSON_EXTRACT(b.dates, '$.start')) AS DATETIME) = {pm_ts}
+                        limit 1
+                        ;", 
+                       .con = pm_cpnm_db)
+  sql_res <- dbGetQuery(pm_cpnm_db, sql_stmt)
+  sql_res$pgm_id == pm_pgm_id
+}

@@ -10,6 +10,7 @@ apf <- flog.appender(appender.file(config$log_appender_file_cz), "clof")
 flog.info("Building a programme clock for CZ", name = "clof")
 cz_site_id <- 1L
 wj_site_id <- 2L
+fmt_ts <- stamp("1958-12-25 13:00:00", quiet = T, orders = "ymd HMS")
 source("R/custom_functions.R", encoding = "UTF-8")
 
 # > Main Control Loop ----
@@ -61,10 +62,10 @@ repeat {
 
   # sheets as df -----------------------------------------------------------
   tbl_raw_zenderschema_cz <- cz_extract_sheet(path_rooster_cz, sheet_name = paste0("modelrooster-", config$modelrooster_versie))
-  df_clock_cz_cz <- tbl_raw_zenderschema_cz |> mutate(start = as.integer(start))
+  df_clock_cz <- tbl_raw_zenderschema_cz |> mutate(start = as.integer(start))
   tbl_raw_wpgidsinfo <- cz_extract_sheet(path_wp_gidsinfo, sheet_name = "gids-info")
   
-  df_clock_cz.1 <- df_clock_cz_cz |> 
+  df_clock_cz.1 <- df_clock_cz |> 
     mutate(start = str_pad(string = start, side = "left", width = 5, pad = "0"), 
            slot = paste0(str_sub(dag, start = 1, end = 2), start)
     ) |> 
@@ -99,25 +100,36 @@ repeat {
   
   # combine week and schedule ----
   df_clock_cz.4 <- bc_week |> left_join(df_clock_cz.3, 
-                                      by = join_by(bc_day_label, bc_week_of_month, bc_hour_start)) |> 
+                                        by = join_by(bc_day_label, bc_week_of_month, bc_hour_start)) |> 
     mutate(hh_start = as.integer(str_extract(hh_formule, "(\\d{2}).$", group = 1)),
            hh_start = if_else(hh_formule == "tw", bc_hour_start, hh_start),
            hh_day = str_extract(hh_formule, "^..(..)", group = 1),
            hh_day = if_else(hh_formule == "tw", bc_day_label, hh_day),
            hh_offset = case_when(is.na(hh_formule) ~ NA_integer_,
                                  hh_formule == "tw" ~ 7L,
-                                 TRUE ~ as.integer(str_extract(hh_formule, "^\\d{2}"))))
+                                 TRUE ~ as.integer(str_extract(hh_formule, "^\\d{2}")))) |> 
+    select(ts:hh_formule, hh_day, hh_start, hh_offset, -bc_week_of_month)
+  
   cz_weekdays <- c("ma", "di", "wo", "do", "vr", "za", "zo")
+  
   df_replays <- df_clock_cz.4 |> filter(!is.na(hh_formule) & (bc_cycle == "h" | is.na(bc_cycle))) |> 
-    select(replay_on_day = hh_day, replay_on_start = hh_start) |> 
-    arrange(factor(replay_on_day, levels = cz_weekdays, ordered = TRUE))
-
-  df_replays_to_add <- df_replays |> 
-    left_join(df_clock_cz.4, by = join_by(replay_on_day == bc_day_label, replay_on_start == bc_hour_start))
-
-  df_clock_cz.5 <- df_clock_cz.4 |> 
+    rename(bc_ts = ts) |> 
+    left_join(bc_week, by = join_by(hh_day == bc_day_label, hh_start == bc_hour_start)) |> 
+    select(-bc_week_of_month) |> 
+    rename(rp_on_ts = ts, rp_on_day = hh_day, rp_on_start = hh_start, rp_formula = hh_formule, rp_on_offset = hh_offset) |> 
+    mutate(rp_of_ts = rp_on_ts - days(rp_on_offset),
+           rp_of_ts = update(rp_of_ts, hour = bc_hour_start)) |> 
+    select(rp_on_ts, rp_on_day, rp_on_start, mr_key:bc_minutes, rp_of_ts, rp_formula) |> 
+    rename(ts = rp_on_ts, bc_day_label = rp_on_day, bc_hour_start = rp_on_start)
+    
+  df_clock_cz.5 <- df_clock_cz.4 |> select(ts, bc_day_label, bc_hour_start, mr_key, bc_minutes, rp_formula = hh_formule) |> 
+    bind_rows(df_replays) |> arrange(ts, rp_of_ts) |> group_by(ts) |> mutate(rn = row_number()) |> ungroup() |> 
+    filter(rn == 1 & !is.na(mr_key)) |> select(-rn)
+    
+  df_clock_cz.6 <- df_clock_cz.5 |> 
     left_join(tbl_raw_wpgidsinfo, by = join_by(mr_key == `key-modelrooster`)) |> 
-    select(moro_key = mr_key,
+    select(ts:rp_of_ts, 
+           moro_key = mr_key,
            woj_bcid,
            titel_NL = `titel-NL`,
            titel_EN = `titel-EN`,
@@ -127,43 +139,15 @@ repeat {
            genre_2 = `genre-2-NL`,
            intro_NL = `std.samenvatting-NL`,
            intro_EN = `std.samenvatting-EN`,
-           afbeelding = feat_img_ids
-    ) |> pivot_longer(cols = c(genre_1, genre_2), 
-                      names_to = NULL, 
-                      values_to = "genre", 
-                      values_drop_na = TRUE) |> arrange(moro_key) |> 
+           afbeelding = feat_img_ids,
+           nipper_mogelijk) |> 
+    pivot_longer(cols = c(genre_1, genre_2), names_to = NULL, values_to = "genre", values_drop_na = TRUE) |> 
     mutate(titel_nl_lc = str_to_lower(titel_NL))
   
-  uniques_titles_cz <- df_clock_cz.4 |> select(titel_NL, titel_EN) |> distinct() |> arrange(titel_NL)
-  
-  # unique_titles_wj <- df_clock_cz_woj |> left_join(tbl_raw_wpgidsinfo, by = join_by(broadcast_id == woj_bcid)) |> 
-  #   rename(genre_1 = `genre-1-NL`, genre_2 = `genre-2-NL`) |> 
-  #   pivot_longer(cols = c(genre_1, genre_2), names_to = NULL, values_to = "genre", values_drop_na = TRUE) |> 
-  #   select(titel_NL = `titel-NL`, titel_EN = `titel-EN`) |> distinct() |> arrange(titel_NL)
-  
-  # uniques_titles <- bind_rows(uniques_titles_cz, unique_titles_wj) |> distinct() |> arrange(titel_NL)
-  
-  cz_schedule_w_ids.1 <- cz_schedule |> left_join(tbl_raw_wpgidsinfo, by = join_by(broadcast_id == woj_bcid)) |> 
-    rename(genre_1 = `genre-1-NL`, genre_2 = `genre-2-NL`) |> 
-    pivot_longer(cols = c(genre_1, genre_2), names_to = NULL, values_to = "genre", values_drop_na = TRUE) 
-  
-  cz_schedule_w_ids.2 <- cz_schedule_w_ids.1 |> 
-    select(bc_start = ts,
-           minutes,
-           titel_NL = `titel-NL`,
-           titel_EN = `titel-EN`,
-           redacteurs = `productie-1-mdw`,
-           production_role = `productie-1-taak`,
-           genre,
-           intro_NL = `std.samenvatting-NL`,
-           intro_EN = `std.samenvatting-EN`,
-           production_type = uitzendtype,
-           broadcast_type,
-           afbeelding = feat_img_ids) |> 
-    mutate(titel_nl_lc = str_to_lower(titel_NL))
-  
+  uniques_titles_cz <- df_clock_cz.6 |> select(titel_NL, titel_EN) |> distinct() |> arrange(titel_NL)
+
   # validate gids-info ----
-  missing_gi <- cz_schedule_w_ids.1 |> filter(is.na(`key-modelrooster`)) |> nrow()
+  missing_gi <- df_clock_cz.6 |> filter(is.na(moro_key)) |> nrow()
   
   if (missing_gi > 0) {
     flog.error("gidsinfo is incomplete; quiting this job.", name = "clof")
@@ -181,10 +165,10 @@ repeat {
             ;"
   
   ty_genres <- dbGetQuery(con, query)
-  cz_schedule_w_ids.3 <- cz_schedule_w_ids.2 |> left_join(ty_genres, by = join_by(genre == genre_NL))
-  cz_schedule_w_ids_missing <- cz_schedule_w_ids.3 |> filter(is.na(ty_genre_id))
+  df_clock_cz.7 <- df_clock_cz.6 |> left_join(ty_genres, by = join_by(genre == genre_NL))
+  n_missing <- df_clock_cz.7 |> filter(is.na(ty_genre_id)) |> nrow()
   
-  if (nrow(cz_schedule_w_ids_missing) > 0) {
+  if (n_missing > 0) {
     flog.error("genres missing in the taxonomy; quiting this job.", name = "clof")
     break
   }
@@ -197,11 +181,10 @@ repeat {
             order by 1
             ;"
   ty_editors <- dbGetQuery(con, query)
-  cz_schedule_w_ids.4 <- cz_schedule_w_ids.3 |> 
-    left_join(ty_editors, by = join_by("redacteurs" == "editor_name"))
-  cz_schedule_w_ids_missing <- cz_schedule_w_ids.4 |> filter(is.na(ty_editor_id)) |> select(redacteurs) |> distinct()
+  df_clock_cz.8 <- df_clock_cz.7 |> left_join(ty_editors, by = join_by("redacteurs" == "editor_name"))
+  n_missing <- df_clock_cz.8 |> filter(is.na(ty_editor_id)) |> select(redacteurs) |> distinct() |> nrow()
   
-  if (nrow(cz_schedule_w_ids_missing) > 0) {
+  if (n_missing > 0) {
     flog.error("editors missing in the taxonomy; quiting this job.", name = "clof")
     break
   }
@@ -226,99 +209,66 @@ repeat {
   )
   select titel_nl_lc, pgm_id from ds3 where rn = 1 order by 1;"
   program_titles <- dbGetQuery(con, query)
-  cz_schedule_w_ids.5 <- cz_schedule_w_ids.4 |> 
-    left_join(program_titles, by = join_by("titel_nl_lc"))
-  cz_schedule_w_ids_missing <- cz_schedule_w_ids.5 |> filter(is.na(pgm_id))
   
-  if (nrow(cz_schedule_w_ids_missing) > 0) {
+  df_clock_cz.9 <- df_clock_cz.8 |> left_join(program_titles, by = join_by("titel_nl_lc"))
+  n_missing <- df_clock_cz.9 |> filter(is.na(pgm_id)) |> nrow()
+  
+  if (n_missing > 0) {
     flog.error("programs missing in 'entries'; quiting this job.", name = "clof")
     break
   }
   
   # check length ----
-  wi_tot_minutes <- cz_schedule_w_ids.5 |> distinct(bc_start, minutes) |> mutate(total_minutes = sum(minutes)) |> 
+  wi_tot_minutes <- df_clock_cz.9 |> distinct(ts, bc_minutes) |> mutate(total_minutes = sum(bc_minutes)) |> 
     head(1) |> select(total_minutes) |> pull()
   
   if (wi_tot_minutes != 10080L) {
     flog.error(str_glue("cz_schedule: expected 10080 minutes, but got {wi_tot_minutes}; quiting this job."), name = "clof")
     break
   }
-  
-  # LaCie ----
-  # these are archived CZ-programs kept on external hard drives (made by the LaCie company) that get a replay on WJ. 
-  tbl_lacie <- tbl_raw_lacie |> filter(!is.na(bc_woj_ts)) |>  # remove fully empty lines
-    mutate(bc_woj_ts = force_tz(bc_woj_ts, tzone = "Europe/Amsterdam"),
-           replay_of = force_tz(replay_of, "Europe/Amsterdam"))
-  cz_schedule_w_ids.6 <- cz_schedule_w_ids.5 |> left_join(tbl_lacie, by = join_by(bc_start == bc_woj_ts)) |> 
-    select(bc_start:pgm_id, replay_of_ts = replay_of) |> mutate(replay_of_epi_id = NA_character_)
-  fmt_ts <- stamp("1958-12-25 13:00:00", quiet = T, orders = "ymd HMS")
-  
-  for (rn in seq_len(nrow(cz_schedule_w_ids.6))) {
-    
-    if (cz_schedule_w_ids.6$broadcast_type[rn] != "LaCie") {
-      next
-    }
-    
-    if (is.na(cz_schedule_w_ids.6$replay_of_ts[rn])) {
-      next
-    }
-    
-    df_replay <- cpnm_epi_get(pm_pgm_id = cz_schedule_w_ids.6$pgm_id[rn],
-                              pm_start = fmt_ts(cz_schedule_w_ids.6$replay_of_ts[rn]),
-                              pm_cpnm_db = con)
-    
-    if (is.na(df_replay$epi_id)) {
-      next
-    }
-    
-    cz_schedule_w_ids.6$replay_of_epi_id[rn] <- df_replay$epi_id
-  }
-  
-  # . check complete ----
-  cz_schedule_w_ids_missing <- cz_schedule_w_ids.6 |> filter(broadcast_type == "LaCie" & is.na(replay_of_epi_id))
-  
-  if (nrow(cz_schedule_w_ids_missing) > 0) {
-    flog.error("LaCie-replays are incomplete; quiting this job.", name = "clof")
-    break
-  }
-  
-  # Universe ----
-  # - these are recent CZ-programs that get a replay on WJ (after being broadcast on CZ in the last month or so). 
-  #   This week's Live CZ's can´t be replayed on WJ until next week, as they need prepping first, next Thursday. 
-  #   For the current week that means `max_start` for live CZ's is the start of this broacast-week: `start_ts` 
-  #                                   `max_start` for other CZ's is the start of the respective WJ-slot: `bc_start`
-  # NB.1 - production-type = e.g. upload, montage, live
-  #        broadcast-type  = LaCie, NonStop, Universe, WorldOfJazz, ReplayWoJ
-  # NB.2 - for Universe broadcasts, the production type is the type on CZ, not the one on WJ
-  for (rn in seq_len(nrow(cz_schedule_w_ids.6))) {
-    
-    if (cz_schedule_w_ids.6$broadcast_type[rn] != "Universe") {
-      next
-    }
-    
-    pm_max_start <- if (cz_schedule_w_ids.6$production_type[rn] == "live") start_ts else cz_schedule_w_ids.6$bc_start[rn]
-    df_replay <- cpnm_uni_get(pm_pgm_id = cz_schedule_w_ids.6$pgm_id[rn],
-                              pm_max_start,
-                              pm_cpnm_db = con)
-    
-    if (is.na(df_replay$epi_id)) {
-      next
-    }
-    
-    cz_schedule_w_ids.6$replay_of_epi_id[rn] <- df_replay$epi_id
-    cz_schedule_w_ids.6$replay_of_ts[rn] <- df_replay$epi_start
-  }
-  
-  # . check complete ----
-  cz_schedule_w_ids_missing <- cz_schedule_w_ids.6 |> filter(broadcast_type == "Universe" & is.na(replay_of_epi_id))
-  
-  if (nrow(cz_schedule_w_ids_missing) > 0) {
-    flog.error("Universe-replays are incomplete; quiting this job.", name = "clof")
-    break
-  }
-  
+
   # Replays ----
-  # - these are replays of native WJ-programs on WJ, but otherwise this works just like Universe
+  # - . adjust offset ----
+  # - NipperStudio programs should get replays of 25 weeks ago. Subtract 24 weeks more (cuurently: 1 week ago), unless
+  #   that episode doesn´t exist
+  df_clock_cz.10 <- df_clock_cz.9 |> 
+    mutate(rp_of_ts_adj = if_else(!is.na(rp_of_ts) & nipper_mogelijk %in% c("BUM", "VOT"),
+                                  rp_of_ts - days(168),
+                                  rp_of_ts))
+  # - . check episodes exist ----
+  adjusted_replays <- df_clock_cz.10 |> select(ts, pgm_id, rp_of_ts, rp_of_ts_adj, rp_formula) |> 
+    filter(!is.na(rp_of_ts_adj)) |> mutate(pgm_id_valid = FALSE) |> distinct()
+  
+  # - . adjust replay titles ----
+  # Biweekly replays have the same title as the original. Other replays have the title found in the original slot. 
+  # So, first add the original slot
+  adjusted_titles.1 <- adjusted_replays |> 
+    mutate(
+      rp_of_day = c("ma", "di", "wo", "do", "vr", "za", "zo")[wday(ts, week_start = 1)],
+      rp_of_week_of_month = 1 + (mday(rp_of_ts_adj) - 1) %/% 7,
+      rp_start = hour(rp_of_ts_adj)
+    )
+  # next, add moro_key
+  adjusted_titles.2 <- adjusted_titles.1 |> left_join(df_clock_cz.3, by = join_by(rp_of_week_of_month == bc_week_of_month,
+                                                                                  rp_of_day == bc_day_label,
+                                                                                  rp_start == bc_hour_start))
+  
+  for (rn in seq_len(nrow(adjusted_replays))) {
+    # sql_res will be empty for replays within the current week, as the original doesn't exist yet
+    # assume it's OK
+    cur_rp_of_ts <- adjusted_replays$rp_of_ts_adj[rn]
+    replay_valid <- if (cur_rp_of_ts >= start_ts) {
+      TRUE
+    } else {
+      cpnm_chk_cz_rp(pm_ts = fmt_ts(adjusted_replays$rp_of_ts_adj[rn]),
+                     pm_pgm_id = adjusted_replays$pgm_id[rn],
+                     pm_cpnm_db = con)
+    }
+    adjusted_replays$pgm_id_valid[rn] <- replay_valid
+  }
+  
+  df_clock_cz.11_err <- df_clock_cz.11 |> inner_join(adjusted_replays, by = join_by(ts))
+  
   for (rn in seq_len(nrow(cz_schedule_w_ids.6))) {
     
     if (cz_schedule_w_ids.6$broadcast_type[rn] != "ReplayWoJ") {

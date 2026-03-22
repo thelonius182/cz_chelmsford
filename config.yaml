@@ -4,6 +4,6 @@ url_wordpress_gidsinfo: 16DrvLEXi3mEa9AbSw28YBkYpCvyO1wXwBwaNi7HpBkA
 url_rooster_cz: 1zt4xR9non3vIus4A9gVvk15HTMAunPBGywMOtAMI-0U
 url_rooster_woj: 1LdBjK5hcpl8m1ZdcZujWWcsx7nLJPY8Gt69mjN8QS9A
 url_lacie: 1d8t8ZItwfBpdVrB9lyc83-F8NysdHRDpgnw-TJ9G2ng
-log_appender_file_cz: /home/lon/Documents/clockfactory_cz.log
-log_appender_file_wj: /home/lon/Documents/clockfactory_wj.log
+log_appender_file_cz: /home/lon/Documents/Logs/clockfactory_cz.log
+log_appender_file_wj: /home/lon/Documents/Logs/clockfactory_wj.log
 modelrooster_versie: "20250417"
