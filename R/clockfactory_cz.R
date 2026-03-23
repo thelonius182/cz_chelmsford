@@ -61,66 +61,87 @@ repeat {
   drive_download(file = cz_get_url("wordpress_gidsinfo"), overwrite = T, path = path_wp_gidsinfo)
 
   # sheets as df -----------------------------------------------------------
-  tbl_raw_zenderschema_cz <- cz_extract_sheet(path_rooster_cz, sheet_name = paste0("modelrooster-", config$modelrooster_versie))
-  df_clock_cz <- tbl_raw_zenderschema_cz |> mutate(start = as.integer(start))
-  tbl_raw_wpgidsinfo <- cz_extract_sheet(path_wp_gidsinfo, sheet_name = "gids-info")
+  df_raw_wpgidsinfo <- cz_extract_sheet(path_wp_gidsinfo, sheet_name = "gids-info")
+  df_raw_zenderschema_cz <- cz_extract_sheet(path_rooster_cz, sheet_name = paste0("modelrooster-", config$modelrooster_versie))
   
-  df_clock_cz.1 <- df_clock_cz |> 
-    mutate(start = str_pad(string = start, side = "left", width = 5, pad = "0"), 
-           slot = paste0(str_sub(dag, start = 1, end = 2), start)
-    ) |> 
-    rename(hh_formule = `hhOffset-dag.uur`,
-           wekelijks = `elke week`,
-           AB_cyclus = `twee-wekelijks`,
-           cyclus_A = A,
-           cyclus_B = B,
+  df_clock_cz.1 <- df_raw_zenderschema_cz |> 
+    mutate( # start = as.integer(start),
+           start = str_pad(string = start, side = "left", width = 5, pad = "0"), 
+           slot = paste0(str_sub(dag, 1, 2), str_sub(start, 1, 2)),
+           slot_day = str_sub(dag, 1, 2),
+           slot_start = as.integer(str_sub(start, 1, 2)),
+           slot_minutes = as.integer(str_sub(start, 3))) |> 
+    rename(slot_replay = `hhOffset-dag.uur`,
+           weekly = `elke week`,
+           AB_cycle = `twee-wekelijks`,
+           cycle_A = A,
+           cycle_B = B,
            week_1 = `week 1`,
            week_2 = `week 2`,
            week_3 = `week 3`,
            week_4 = `week 4`,
-           week_5 = `week 5`
-    ) 
+           week_5 = `week 5`) |> 
+    select(-dag, -start, -Balk, -Toon, -starts_with("r"), -starts_with("b")) |> 
+    select(slot:slot_minutes, slot_replay, everything())
   
-  df_clock_cz.2 <- df_clock_cz.1 |>
-    select(-starts_with("r"), -starts_with("b"), -starts_with("t", ignore.case = F), -dag, -start, -Toon) |>  
-    select(slot, hh_formule, everything()) |> 
-    pivot_longer(names_to = "wanneer", cols = starts_with("week_"), values_to = "mr_key") 
+  # split 5-week cycle (a) and 2-week cycle (b)
+  df_clock_cz.1a <- df_clock_cz.1 |> select(!contains("cycle")) |> filter(is.na(slot_replay) | slot_replay != "tw")
+  df_clock_cz.1b <- df_clock_cz.1 |> select(slot:slot_replay, AB_cycle, cycle_A, cycle_B) |> filter(slot_replay == "tw")
   
+  # pivot the 5-week repeating columns to rows
+  df_clock_cz.2a <- df_clock_cz.1a |> rename(week_0 = weekly, t0 = te) |>
+    pivot_longer(cols = !starts_with("slot"),
+                 names_to = c(".value", "bc_week"),
+                 names_pattern = "^(week|t)_?(\\d+)$") |> rename(bc = week, bc_type = t) |> filter(!is.na(bc))
+  
+  # prep the 2-week cycle for binding to the pivoted 5-week cycle
   cur_week_label <- week_label(date(start_ts))
+  df_clock_cz.2b <- df_clock_cz.1b |> mutate(cycle_vec = cur_week_label,
+                                             bc_type = if_else(cycle_vec == "A", cycle_A, cycle_B)) |> 
+    select(slot:slot_replay, bc = AB_cycle, bc_type)
   
-  df_clock_cz.3 <- df_clock_cz.2 |> 
-    mutate(mr_key = if_else(!is.na(mr_key), mr_key, if_else(!is.na(wekelijks), wekelijks, AB_cyclus)),
-           bc_minutes = as.integer(str_extract(slot, "\\d{3}$")),
-           bc_day_label = str_extract(slot, "^.."),
-           bc_week_of_month = as.integer(str_extract(wanneer, "\\d$")),
-           bc_hour_start = as.integer(str_extract(slot, "^..(\\d{2})", group = 1)),
-           cycle_vec = cur_week_label,
-           bc_cycle = if_else(cycle_vec == "A", cyclus_A, cyclus_B)) |> 
-    select(mr_key, starts_with("bc_"), hh_formule)
+  # bind the cycles
+  df_clock_cz.2c <- df_clock_cz.2a |> bind_rows(df_clock_cz.2b) |> mutate(bc_week = as.integer(bc_week))
+  df_clock_cz.2d <- df_clock_cz.2c |>
+    mutate(n = if_else(is.na(bc_week) | bc_week == 0L, 5L, 1L)) |>
+    uncount(n, .id = "id") |>
+    mutate(bc_week = if_else(is.na(bc_week) | bc_week == 0L, id, bc_week)) |> select(-id) |> arrange(slot, bc_week)
   
   # combine week and schedule ----
-  df_clock_cz.4 <- bc_week |> left_join(df_clock_cz.3, 
-                                        by = join_by(bc_day_label, bc_week_of_month, bc_hour_start)) |> 
-    mutate(hh_start = as.integer(str_extract(hh_formule, "(\\d{2}).$", group = 1)),
-           hh_start = if_else(hh_formule == "tw", bc_hour_start, hh_start),
-           hh_day = str_extract(hh_formule, "^..(..)", group = 1),
-           hh_day = if_else(hh_formule == "tw", bc_day_label, hh_day),
-           hh_offset = case_when(is.na(hh_formule) ~ NA_integer_,
-                                 hh_formule == "tw" ~ 7L,
-                                 TRUE ~ as.integer(str_extract(hh_formule, "^\\d{2}")))) |> 
-    select(ts:hh_formule, hh_day, hh_start, hh_offset, -bc_week_of_month)
+  df_clock_cz.3 <- bc_week |> left_join(df_clock_cz.2d, 
+                                        by = join_by(bc_day_label == slot_day, 
+                                                     bc_week_of_month == bc_week, 
+                                                     bc_hour_start == slot_start)) |> 
+    mutate(slot_replay_4 = str_extract(slot_replay, "^\\d{2}(.{4})", group = 1),
+           slot = if_else(is.na(slot), 
+                          paste0(bc_day_label, str_pad(bc_hour_start, side = "left", width = 2, pad = "0")),
+                          slot)) |> 
+    select(-bc_week_of_month, -bc_day_label, -bc_hour_start, -slot_replay) |> 
+    rename(slot_replay = slot_replay_4, bc_ts = ts, bc_clock_key = bc) |> 
+    mutate(slot_replay = if_else(bc_type == "h" & is.na(slot_replay), slot, slot_replay))
   
+  # add replay dates
+  prep_rp_ts <- df_clock_cz.3 |> select(slot, rp_on_ts = bc_ts)  
+  df_clock_cz.4 <- df_clock_cz.3 |> left_join(prep_rp_ts, join_by(slot_replay == slot))
+  
+  # TOT HIER ----
   cz_weekdays <- c("ma", "di", "wo", "do", "vr", "za", "zo")
   
   df_replays <- df_clock_cz.4 |> filter(!is.na(hh_formule) & (bc_cycle == "h" | is.na(bc_cycle))) |> 
     rename(bc_ts = ts) |> 
-    left_join(bc_week, by = join_by(hh_day == bc_day_label, hh_start == bc_hour_start)) |> 
+    left_join(bc_week, by = join_by(hh_day == bc_day_label, rp_start == bc_hour_start)) |> 
     select(-bc_week_of_month) |> 
-    rename(rp_on_ts = ts, rp_on_day = hh_day, rp_on_start = hh_start, rp_formula = hh_formule, rp_on_offset = hh_offset) |> 
+    rename(rp_on_ts = ts, rp_on_day = hh_day, rp_on_start = rp_start, rp_formula = hh_formule, rp_on_offset = hh_offset) |> 
     mutate(rp_of_ts = rp_on_ts - days(rp_on_offset),
-           rp_of_ts = update(rp_of_ts, hour = bc_hour_start)) |> 
-    select(rp_on_ts, rp_on_day, rp_on_start, mr_key:bc_minutes, rp_of_ts, rp_formula) |> 
-    rename(ts = rp_on_ts, bc_day_label = rp_on_day, bc_hour_start = rp_on_start)
+           rp_of_ts = update(rp_of_ts, hour = bc_hour_start),
+           rp_of_weekblock = 1 + (mday(rp_of_ts) - 1) %/% 7,
+           rp_of_day = c("ma", "di", "wo", "do", "vr", "za", "zo")[wday(rp_of_ts, week_start = 1)],
+           rp_of_start = hour(rp_of_ts)) |> 
+    select(rp_on_ts, rp_on_day, rp_on_start, mr_key:bc_minutes, rp_of_ts:rp_of_start, rp_formula) |> 
+    left_join(df_clock_cz.3, by = join_by(rp_of_weekblock == bc_week_of_month,
+                                          rp_of_day == bc_day_label,
+                                          rp_of_start == bc_hour_start))
+    # rename(ts = rp_on_ts, bc_day_label = rp_on_day, bc_hour_start = rp_on_start)
     
   df_clock_cz.5 <- df_clock_cz.4 |> select(ts, bc_day_label, bc_hour_start, mr_key, bc_minutes, rp_formula = hh_formule) |> 
     bind_rows(df_replays) |> arrange(ts, rp_of_ts) |> group_by(ts) |> mutate(rn = row_number()) |> ungroup() |> 
