@@ -1,6 +1,6 @@
-# - - - - - - - - - - - - - - - - - - -
-# Build this week's CZ programme clock
-# - - - - - - - - - - - - - - - - - - -
+# - - - - - - - - - - - - -
+# Build CZ programme clock
+# - - - - - - - - - - - - -
 
 # init ----
 pacman::p_load(tidyr, dplyr, stringr, readr, lubridate, fs, futile.logger, readxl, DBI,
