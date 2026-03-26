@@ -18,27 +18,10 @@ repeat {
   # connect to DB
   source("R/cpnm_db_setup.R", encoding = "UTF-8")  
   
-  # Find latest week ----
-  # ... available on the site, to know where to start the next one
-  # `latest week`: 19:00-slots of the latest 7 days on the site
-  df_latest_week <- latest_week(pm_cpnm_db = con)
-  
-  # expect 7 consecutive dates without gaps or duplicates
-  n_rows <- nrow(df_latest_week)
-  if (n_rows != 7) {
-    flog.error("finding latest week failed: list is incomplete", name = "clof")
-    break
-  }
-  
-  has_gaps <- df_latest_week |> filter(diff_days != 1) |> nrow()
-  if (has_gaps > 0) {
-    flog.error("finding latest week failed: invalid date sequence", name = "clof")
-    break
-  }
-  
-  # assign start/stop-of-week ----
+  # Find start of week to build ----
+  clock_start_utc <- start_of_cz_week(pm_cpnm_db = con)
   tz_am <- "Europe/Amsterdam"
-  start_ts <- force_tz(df_latest_week$d[1] + days(1), tzone = tz_am) |> update(hour = 13, minute = 0, second = 0)
+  start_ts <- force_tz(clock_start_utc$next_week_start, tzone = tz_am)
   stop_ts   <- start_ts + days(7)
   flog.info(str_glue("Clock will run Thursday {logfmt_ts(start_ts)} to {logfmt_ts(stop_ts)}"), name = "clof")
   
@@ -125,6 +108,14 @@ repeat {
   df_clock_cz.4 <- df_clock_cz.3 |> left_join(prep_rp_ts, join_by(slot_replay == slot))
   
   # TOT HIER ----
+  # prep as replays ----
+  df_clock_rp <- df_clock_cz.4 |> select(bc_ts = rp_on_ts, slot = slot_replay, slot_minutes:bc_type) |> 
+    mutate(is_rp = TRUE)
+  
+  # join origs & replays ----
+  df_clock_cz.5 <- df_clock_cz.4 |> bind_rows(df_clock_rp) |> arrange(bc_ts) |> 
+    filter(!is.na(slot_minutes) & !is.na(bc_ts)) |> select(-slot_replay, -rp_on_ts) |> distinct()
+  
   cz_weekdays <- c("ma", "di", "wo", "do", "vr", "za", "zo")
   
   df_replays <- df_clock_cz.4 |> filter(!is.na(hh_formule) & (bc_cycle == "h" | is.na(bc_cycle))) |> 
