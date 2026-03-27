@@ -43,7 +43,7 @@ repeat {
   path_wp_gidsinfo <- "/home/lon/R_projects/cz_chelmsford/resources/wordpress_gidsinfo.xlsx"
   drive_download(file = cz_get_url("wordpress_gidsinfo"), overwrite = T, path = path_wp_gidsinfo)
 
-  # sheets as df -----------------------------------------------------------
+  # sheets as df ----
   df_raw_wpgidsinfo <- cz_extract_sheet(path_wp_gidsinfo, sheet_name = "gids-info")
   df_raw_zenderschema_cz <- cz_extract_sheet(path_rooster_cz, sheet_name = paste0("modelrooster-", config$modelrooster_versie))
   
@@ -100,49 +100,55 @@ repeat {
                           paste0(bc_day_label, str_pad(bc_hour_start, side = "left", width = 2, pad = "0")),
                           slot)) |> 
     select(-bc_week_of_month, -bc_day_label, -bc_hour_start, -slot_replay) |> 
-    rename(slot_replay = slot_replay_4, bc_ts = ts, bc_clock_key = bc) |> 
-    mutate(slot_replay = if_else(bc_type == "h" & is.na(slot_replay), slot, slot_replay))
-  
+    rename(slot_replay = slot_replay_4, bc_ts = ts, bc_clock_key = bc) 
+    
   # add replay dates
   prep_rp_ts <- df_clock_cz.3 |> select(slot, rp_on_ts = bc_ts)  
   df_clock_cz.4 <- df_clock_cz.3 |> left_join(prep_rp_ts, join_by(slot_replay == slot))
   
-  # TOT HIER ----
   # prep as replays ----
-  df_clock_rp <- df_clock_cz.4 |> select(bc_ts = rp_on_ts, slot = slot_replay, slot_minutes:bc_type) |> 
+  df_clock_rp <- df_clock_cz.4 |> filter(!is.na(rp_on_ts)) |> 
+    select(bc_ts = rp_on_ts, slot = slot_replay, slot_minutes:bc_type) |> 
     mutate(is_rp = TRUE)
   
   # join origs & replays ----
-  df_clock_cz.5 <- df_clock_cz.4 |> bind_rows(df_clock_rp) |> arrange(bc_ts) |> 
-    filter(!is.na(slot_minutes) & !is.na(bc_ts)) |> select(-slot_replay, -rp_on_ts) |> distinct()
+  df_clock_cz.5 <- df_clock_cz.4 |> bind_rows(df_clock_rp) |> arrange(bc_ts) |>
+    filter(!if_all(slot_minutes:is_rp, is.na)) |> select(-slot_replay, -rp_on_ts)
   
-  cz_weekdays <- c("ma", "di", "wo", "do", "vr", "za", "zo")
+  # validate clock length ----
+  cur_clock_minutes <- sum(df_clock_cz.5$slot_minutes)
   
-  df_replays <- df_clock_cz.4 |> filter(!is.na(hh_formule) & (bc_cycle == "h" | is.na(bc_cycle))) |> 
-    rename(bc_ts = ts) |> 
-    left_join(bc_week, by = join_by(hh_day == bc_day_label, rp_start == bc_hour_start)) |> 
-    select(-bc_week_of_month) |> 
-    rename(rp_on_ts = ts, rp_on_day = hh_day, rp_on_start = rp_start, rp_formula = hh_formule, rp_on_offset = hh_offset) |> 
-    mutate(rp_of_ts = rp_on_ts - days(rp_on_offset),
-           rp_of_ts = update(rp_of_ts, hour = bc_hour_start),
-           rp_of_weekblock = 1 + (mday(rp_of_ts) - 1) %/% 7,
-           rp_of_day = c("ma", "di", "wo", "do", "vr", "za", "zo")[wday(rp_of_ts, week_start = 1)],
-           rp_of_start = hour(rp_of_ts)) |> 
-    select(rp_on_ts, rp_on_day, rp_on_start, mr_key:bc_minutes, rp_of_ts:rp_of_start, rp_formula) |> 
-    left_join(df_clock_cz.3, by = join_by(rp_of_weekblock == bc_week_of_month,
-                                          rp_of_day == bc_day_label,
-                                          rp_of_start == bc_hour_start))
-    # rename(ts = rp_on_ts, bc_day_label = rp_on_day, bc_hour_start = rp_on_start)
-    
-  df_clock_cz.5 <- df_clock_cz.4 |> select(ts, bc_day_label, bc_hour_start, mr_key, bc_minutes, rp_formula = hh_formule) |> 
-    bind_rows(df_replays) |> arrange(ts, rp_of_ts) |> group_by(ts) |> mutate(rn = row_number()) |> ungroup() |> 
-    filter(rn == 1 & !is.na(mr_key)) |> select(-rn)
-    
+  if (cur_clock_minutes != 10080L) {
+    flog.error("invalid clock length: expected 10080 minutes, but got {cur_clock_minutes}; quiting this job.", name = "clof")
+    break
+  }
+  
+  # cz_weekdays <- c("ma", "di", "wo", "do", "vr", "za", "zo")
+  # 
+  # df_replays <- df_clock_cz.4 |> filter(!is.na(hh_formule) & (bc_cycle == "h" | is.na(bc_cycle))) |> 
+  #   rename(bc_ts = ts) |> 
+  #   left_join(bc_week, by = join_by(hh_day == bc_day_label, rp_start == bc_hour_start)) |> 
+  #   select(-bc_week_of_month) |> 
+  #   rename(rp_on_ts = ts, rp_on_day = hh_day, rp_on_start = rp_start, rp_formula = hh_formule, rp_on_offset = hh_offset) |> 
+  #   mutate(rp_of_ts = rp_on_ts - days(rp_on_offset),
+  #          rp_of_ts = update(rp_of_ts, hour = bc_hour_start),
+  #          rp_of_weekblock = 1 + (mday(rp_of_ts) - 1) %/% 7,
+  #          rp_of_day = c("ma", "di", "wo", "do", "vr", "za", "zo")[wday(rp_of_ts, week_start = 1)],
+  #          rp_of_start = hour(rp_of_ts)) |> 
+  #   select(rp_on_ts, rp_on_day, rp_on_start, mr_key:bc_minutes, rp_of_ts:rp_of_start, rp_formula) |> 
+  #   left_join(df_clock_cz.3, by = join_by(rp_of_weekblock == bc_week_of_month,
+  #                                         rp_of_day == bc_day_label,
+  #                                         rp_of_start == bc_hour_start))
+  #   # rename(ts = rp_on_ts, bc_day_label = rp_on_day, bc_hour_start = rp_on_start)
+  #   
+  # df_clock_cz.5 <- df_clock_cz.4 |> select(ts, bc_day_label, bc_hour_start, mr_key, bc_minutes, rp_formula = hh_formule) |> 
+  #   bind_rows(df_replays) |> arrange(ts, rp_of_ts) |> group_by(ts) |> mutate(rn = row_number()) |> ungroup() |> 
+  #   filter(rn == 1 & !is.na(mr_key)) |> select(-rn)
+  
+  # link clock details ----
   df_clock_cz.6 <- df_clock_cz.5 |> 
-    left_join(tbl_raw_wpgidsinfo, by = join_by(mr_key == `key-modelrooster`)) |> 
-    select(ts:rp_of_ts, 
-           moro_key = mr_key,
-           woj_bcid,
+    left_join(df_raw_wpgidsinfo, by = join_by(bc_clock_key == `key-modelrooster`)) |> 
+    select(bc_ts:is_rp, 
            titel_NL = `titel-NL`,
            titel_EN = `titel-EN`,
            productie = `productie-1-taak`,
@@ -152,6 +158,7 @@ repeat {
            intro_NL = `std.samenvatting-NL`,
            intro_EN = `std.samenvatting-EN`,
            afbeelding = feat_img_ids,
+           woj_bcid,
            nipper_mogelijk) |> 
     pivot_longer(cols = c(genre_1, genre_2), names_to = NULL, values_to = "genre", values_drop_na = TRUE) |> 
     mutate(titel_nl_lc = str_to_lower(titel_NL))
@@ -159,10 +166,10 @@ repeat {
   uniques_titles_cz <- df_clock_cz.6 |> select(titel_NL, titel_EN) |> distinct() |> arrange(titel_NL)
 
   # validate gids-info ----
-  missing_gi <- df_clock_cz.6 |> filter(is.na(moro_key)) |> nrow()
+  missing_gi <- df_clock_cz.6 |> filter(is.na(titel_NL)) |> nrow()
   
   if (missing_gi > 0) {
-    flog.error("gidsinfo is incomplete; quiting this job.", name = "clof")
+    flog.error("clock details are incomplete; quiting this job.", name = "clof")
     break
   }
   
@@ -171,6 +178,7 @@ repeat {
                    id as ty_genre_id 
             from taxonomies 
             where type = 'genre' 
+              and deleted_at is null
               and site_id in (1, 2)
               and name->>'$.nl' not in ('Algemeen', 'World of Jazz')
             order by 1
@@ -190,6 +198,8 @@ repeat {
                    id as ty_editor_id
             from taxonomies 
             where type = 'colofon'
+              and deleted_at is null
+              and site_id in (1, 2)
             order by 1
             ;"
   ty_editors <- dbGetQuery(con, query)
@@ -202,24 +212,27 @@ repeat {
   }
   
   # programs ----
-  query <- "with ds1 as (
-       select lower(p.title->>'$.nl') as titel_nl_lc, 
-              p.id as pgm_id,
-              b.dates
-       from entries p join entries e on e.parent_id = p.id
-                      join entries b on b.parent_id = e.id
-       where p.type = 'program' 
-  ), ds2 as (
-       select titel_nl_lc, pgm_id, count(*) as n_bcs
-       from ds1
-       group by titel_nl_lc, pgm_id
-  ), ds3 as (
-       select ds2.*,
-       ROW_NUMBER() OVER (PARTITION BY titel_nl_lc
-   	    			     ORDER BY n_bcs desc) AS rn
-       from ds2
-  )
-  select titel_nl_lc, pgm_id from ds3 where rn = 1 order by 1;"
+  query <- "WITH counts AS (
+                SELECT LOWER(p.title->>'$.nl') AS titel_nl_lc,
+                       p.id AS pgm_id,
+                       COUNT(*) AS n_bcs
+                FROM entries p JOIN entries e ON e.parent_id = p.id
+                                             AND e.deleted_at IS NULL
+                               JOIN entries b ON b.parent_id = e.id
+                                             AND b.deleted_at IS NULL
+                WHERE p.type = 'program'
+                  AND p.site_id IN (1, 2)
+                  AND p.deleted_at IS NULL
+                GROUP BY LOWER(p.title->>'$.nl'),
+                         p.id
+            ), ranked AS (SELECT titel_nl_lc,
+                                 pgm_id,
+                                 n_bcs,
+                                 ROW_NUMBER() OVER (PARTITION BY titel_nl_lc
+                                                    ORDER BY n_bcs DESC, pgm_id) AS rn
+                          FROM counts
+            )
+            SELECT titel_nl_lc, pgm_id FROM ranked WHERE rn = 1 ORDER BY titel_nl_lc;"
   program_titles <- dbGetQuery(con, query)
   
   df_clock_cz.9 <- df_clock_cz.8 |> left_join(program_titles, by = join_by("titel_nl_lc"))
@@ -231,7 +244,7 @@ repeat {
   }
   
   # check length ----
-  wi_tot_minutes <- df_clock_cz.9 |> distinct(ts, bc_minutes) |> mutate(total_minutes = sum(bc_minutes)) |> 
+  wi_tot_minutes <- df_clock_cz.9 |> distinct(bc_ts, slot_minutes) |> mutate(total_minutes = sum(slot_minutes)) |> 
     head(1) |> select(total_minutes) |> pull()
   
   if (wi_tot_minutes != 10080L) {
@@ -239,6 +252,19 @@ repeat {
     break
   }
 
+  # TOT HIER ----
+  
+  # add "replay of"-dates ----
+  for (rn in seq_len(nrow(df_clock_cz.9))) {
+
+    if (is.na(df_clock_cz.9$is_rp[rn]) | !df_clock_cz.9$is_rp[rn]) {
+      next
+    }
+    
+    row <- df_clock_cz.9[rn, , drop = FALSE]
+    print(row)
+  }
+  
   # Replays ----
   # - . adjust offset ----
   # - NipperStudio programs should get replays of 25 weeks ago. Subtract 24 weeks more (cuurently: 1 week ago), unless
@@ -260,7 +286,7 @@ repeat {
       rp_of_week_of_month = 1 + (mday(rp_of_ts_adj) - 1) %/% 7,
       rp_start = hour(rp_of_ts_adj)
     )
-  # next, add moro_key
+  # next, add bc_clock_key
   adjusted_titles.2 <- adjusted_titles.1 |> left_join(df_clock_cz.3, by = join_by(rp_of_week_of_month == bc_week_of_month,
                                                                                   rp_of_day == bc_day_label,
                                                                                   rp_start == bc_hour_start))
