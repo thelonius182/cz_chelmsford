@@ -23,7 +23,7 @@ repeat {
   tz_am <- "Europe/Amsterdam"
   start_ts <- force_tz(clock_start_utc$next_week_start, tzone = tz_am)
   stop_ts   <- start_ts + days(7)
-  flog.info(str_glue("Clock will run Thursday {logfmt_ts(start_ts)} to {logfmt_ts(stop_ts)}"), name = "clof")
+  flog.info(str_glue("Show Thursday {logfmt_ts(start_ts)} to Thursday {logfmt_ts(stop_ts)}"), name = "clof")
   
   bc_week_ts <- tibble(
     ts = seq(from = start_ts, to = stop_ts - hours(1), by = "hour")
@@ -211,6 +211,20 @@ repeat {
     break
   }
   
+  # Images ----
+  df_afb <- cz_schedule_w_ids.6 |> filter(!is.na(afbeelding)) |> select(afbeelding) |> distinct() |> 
+    mutate(afbeelding = as.integer(afbeelding), image_id = NA_character_) |> arrange(afbeelding)
+  
+  for (rn in seq_len(nrow(df_afb))) {
+    df_image <- cpnm_img_get(pm_img_id = df_afb$afbeelding[rn], pm_cpnm_db = con)
+    
+    if (is.na(df_image$id)) {
+      next
+    }
+    
+    df_afb$image_id[rn] <- df_image$id
+  }
+  
   # programs ----
   query <- "WITH counts AS (
                 SELECT LOWER(p.title->>'$.nl') AS titel_nl_lc,
@@ -253,6 +267,8 @@ repeat {
   }
 
   # TOT HIER ----
+  break
+}
   
   # add "replay of"-dates ----
   for (rn in seq_len(nrow(df_clock_cz.9))) {
@@ -261,10 +277,30 @@ repeat {
       next
     }
     
-    row <- df_clock_cz.9[rn, , drop = FALSE]
-    print(row)
+    pm_max_start <- if (str_match(df_clock_cz.9$bc_type[rn], "l|v")) {
+      start_ts
+    } else {
+      df_clock_cz.9$bc_ts[rn]
+    }
+    df_replay <- cpnm_uni_get(pm_pgm_id = df_clock_cz.9$pgm_id[rn],
+                              pm_max_start,
+                              pm_cpnm_db = con)
+    
+    if (is.na(df_replay$epi_id)) {
+      next
+    }
+    
+    df_clock_cz.9$replay_of_epi_id[rn] <- df_replay$epi_id
+    df_clock_cz.9$replay_of_ts[rn] <- df_replay$epi_start
   }
   
+for (rn in seq_len(nrow(woj_schedule_w_ids.6))) {
+  
+  if (woj_schedule_w_ids.6$broadcast_type[rn] != "Universe") {
+    next
+  }
+}
+
   # Replays ----
   # - . adjust offset ----
   # - NipperStudio programs should get replays of 25 weeks ago. Subtract 24 weeks more (cuurently: 1 week ago), unless
@@ -331,20 +367,6 @@ repeat {
   if (nrow(cz_schedule_w_ids_missing) > 0) {
     flog.error("WorldOfJazz-replays are incomplete; quiting this job.", name = "clof")
     break
-  }
-  
-  # Images ----
-  df_afb <- cz_schedule_w_ids.6 |> filter(!is.na(afbeelding)) |> select(afbeelding) |> distinct() |> 
-    mutate(afbeelding = as.integer(afbeelding), image_id = NA_character_) |> arrange(afbeelding)
-  
-  for (rn in seq_len(nrow(df_afb))) {
-    df_image <- cpnm_img_get(pm_img_id = df_afb$afbeelding[rn], pm_cpnm_db = con)
-    
-    if (is.na(df_image$id)) {
-      next
-    }
-    
-    df_afb$image_id[rn] <- df_image$id
   }
   
   # . check complete ----

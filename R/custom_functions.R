@@ -297,7 +297,9 @@ cpnm_uni_get <- function(pm_pgm_id, pm_max_start, pm_cpnm_db) {
   sql_stmt <- glue_sql("select e.id as epi_id, 
                                b.dates->>'$.start' as epi_start 
                         from entries p join entries e on e.parent_id = p.id
+                                                     and e.deleted_at is null
                                        join entries b on b.parent_id = e.id
+                                                     and b.deleted_at is null
                         where p.id = {pm_pgm_id}
                           and b.dates->>'$.start' < {pm_max_start}
                         order by 2 desc 
