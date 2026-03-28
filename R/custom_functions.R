@@ -68,8 +68,21 @@ start_of_cz_week <- function(pm_cpnm_db) {
   dbGetQuery(pm_cpnm_db, sql_stmt)
 }
 
-cpnm_edi_ins <- function(pm_name_NL, 
-                            pm_cpnm_db) {
+locked_slots <- function(pm_start, pm_stop, pm_db) {
+  fmt_start_ts = fmt_ts(pm_start)
+  fmt_stop_ts = fmt_ts(pm_stop)
+  sql_stmt <- glue_sql(
+  "select dates->>'$.start' as locked_slot
+   from entries
+   where type = 'broadcast'
+     and site_id in (1, 2)
+     and deleted_at is null
+     and dates->>'$.start' between {fmt_start_ts} and {fmt_stop_ts};", 
+  .con = pm_db)
+  sql_res <- dbGetQuery(pm_db, sql_stmt)
+}
+
+cpnm_edi_ins <- function(pm_name_NL, pm_cpnm_db) {
   new_id <- UUIDgenerate(use.time = FALSE)  # v4
   ed_name_slug <- as_slug(pm_name_NL)
   sql_stmt <- glue_sql("INSERT INTO taxonomies (
@@ -156,7 +169,7 @@ cpnm_epi_bc_ins <- function(pm_pgm_id,
                            created_at)
       VALUES ({new_id_epi},                           -- id
               'episode',                              -- type
-              cast({df_cur_pgm$title}as json),        -- title 
+              cast({df_cur_pgm$title} as json),       -- title 
               cast({df_cur_pgm$slug} as json),        -- slug
               JSON_OBJECT('nl', {pm_descr_NL},        -- description
                           'en', {pm_descr_EN}),       
@@ -185,7 +198,7 @@ cpnm_epi_bc_ins <- function(pm_pgm_id,
                            created_at)
       VALUES ({new_id_bc},                            -- id
               'broadcast',                            -- type
-              cast({df_cur_pgm$title}as json),        -- title 
+              cast({df_cur_pgm$title} as json),       -- title 
               cast({df_cur_pgm$slug} as json),        -- slug
               JSON_OBJECT('start', {fmt_start_ts},    -- dates
                           'end', {fmt_stop_ts}),       
@@ -340,4 +353,61 @@ cpnm_chk_cz_rp <- function(pm_ts, pm_pgm_id, pm_cpnm_db) {
                        .con = pm_cpnm_db)
   sql_res <- dbGetQuery(pm_cpnm_db, sql_stmt)
   sql_res$pgm_id == pm_pgm_id
+}
+
+clock2db <- function(pm_clock_tib, pm_db) {
+  
+  # - some programs have 2 main genres, so have 2 records; treat them separately: 'a' for all columns,
+  #   and 'b' just for the extra genre
+  cur_clock <- pm_clock_tib |> group_by(bc_ts) |> mutate(sch_item = row_number()) |> ungroup()
+  cur_clock_a <- cur_clock |> filter(sch_item == 1L)
+  cur_clock_b <- cur_clock |> filter(sch_item == 2L)
+  
+  for (rn in seq_len(nrow(cur_clock_a))) {
+    # temp exception
+    # if (rn %in% c(1, 2)) next
+    
+    if (!cur_clock_a$is_rp[rn]) {
+      # . fresh episode & broadcast ----
+      fresh_epi_bc <- cpnm_epi_bc_ins(pm_pgm_id = cur_clock_a$pgm_id[rn],
+                                      pm_descr_NL = cur_clock_a$intro_NL[rn],
+                                      pm_descr_EN = cur_clock_a$intro_EN[rn],
+                                      pm_img_id = cur_clock_a$image_id[rn],
+                                      pm_site_id = 1L,
+                                      pm_bc_start = cur_clock_a$bc_ts[rn],
+                                      pm_bc_minutes = cur_clock_a$slot_minutes[rn],
+                                      pm_cpnm_db = pm_db)
+      # . genre ----
+      # - add an `episode` taxonomable record for first genre
+      txb_res <- cpnm_txb_ins(pm_epi_id = fresh_epi_bc,
+                              pm_txy_id = cur_clock_a$ty_genre_id[rn],
+                              pm_order = 1L,
+                              pm_cpnm_db = pm_db)
+      
+      # - add an `episode` taxonomable record for second genre
+      df_g2 <- cur_clock_b |> filter(bc_ts == cur_clock_a$bc_ts[rn])
+      
+      if (nrow(df_g2) == 1) {
+        txb_res <- cpnm_txb_ins(pm_epi_id = fresh_epi_bc,
+                                pm_txy_id = df_g2$ty_genre_id,
+                                pm_order = 2L,
+                                pm_cpnm_db = pm_db)
+      }
+      
+      # . editor ----
+      # - add an `episode` taxonomable record for editors and production-role (txy-type colofon)
+      txb_res <- cpnm_txb_edi_ins(pm_epi_id = fresh_epi_bc,
+                                  pm_txy_id = cur_clock_a$ty_editor_id[rn],
+                                  pm_role_NL = cur_clock_a$production_role[rn],
+                                  pm_cpnm_db = pm_db)
+    } else {
+      # . replay ----
+      bc_replay_res <- cpnm_bc_ins(pm_pgm_id = cur_clock_a$pgm_id[rn],
+                                   pm_epi_id = cur_clock_a$replay_of_epi_id[rn],
+                                   pm_site_id = 1L,
+                                   pm_bc_start = cur_clock_a$bc_ts[rn],
+                                   pm_bc_minutes = cur_clock_a$slot_minutes[rn],
+                                   pm_cpnm_db = pm_db)
+    }
+  }
 }

@@ -113,13 +113,14 @@ repeat {
   
   # join origs & replays ----
   df_clock_cz.5 <- df_clock_cz.4 |> bind_rows(df_clock_rp) |> arrange(bc_ts) |>
-    filter(!if_all(slot_minutes:is_rp, is.na)) |> select(-slot_replay, -rp_on_ts)
+    filter(!if_all(slot_minutes:is_rp, is.na)) |> select(-slot_replay, -rp_on_ts) |> 
+    mutate(is_rp = coalesce(is_rp, FALSE))
   
   # validate clock length ----
   cur_clock_minutes <- sum(df_clock_cz.5$slot_minutes)
   
   if (cur_clock_minutes != 10080L) {
-    flog.error("invalid clock length: expected 10080 minutes, but got {cur_clock_minutes}; quiting this job.", name = "clof")
+    flog.error("invalid clock length (1): expected 10080 minutes, but got {cur_clock_minutes}; quiting this job.", name = "clof")
     break
   }
   
@@ -204,6 +205,8 @@ repeat {
             ;"
   ty_editors <- dbGetQuery(con, query)
   df_clock_cz.8 <- df_clock_cz.7 |> left_join(ty_editors, by = join_by("redacteurs" == "editor_name"))
+  
+  # . check complete ----
   n_missing <- df_clock_cz.8 |> filter(is.na(ty_editor_id)) |> select(redacteurs) |> distinct() |> nrow()
   
   if (n_missing > 0) {
@@ -211,8 +214,8 @@ repeat {
     break
   }
   
-  # Images ----
-  df_afb <- cz_schedule_w_ids.6 |> filter(!is.na(afbeelding)) |> select(afbeelding) |> distinct() |> 
+  # images ----
+  df_afb <- df_clock_cz.8 |> filter(!is.na(afbeelding)) |> select(afbeelding) |> distinct() |> 
     mutate(afbeelding = as.integer(afbeelding), image_id = NA_character_) |> arrange(afbeelding)
   
   for (rn in seq_len(nrow(df_afb))) {
@@ -224,6 +227,17 @@ repeat {
     
     df_afb$image_id[rn] <- df_image$id
   }
+  
+  # . check complete ----
+  df_missing <- df_afb |> filter(is.na(image_id))
+  
+  if (nrow(df_missing) > 0) {
+    flog.error("images are incomplete; quiting this job.", name = "clof")
+    break
+  }
+  
+  # . append ----
+  df_clock_cz.9 <- df_clock_cz.8 |> left_join(df_afb, by = join_by(afbeelding))
   
   # programs ----
   query <- "WITH counts AS (
@@ -249,23 +263,34 @@ repeat {
             SELECT titel_nl_lc, pgm_id FROM ranked WHERE rn = 1 ORDER BY titel_nl_lc;"
   program_titles <- dbGetQuery(con, query)
   
-  df_clock_cz.9 <- df_clock_cz.8 |> left_join(program_titles, by = join_by("titel_nl_lc"))
-  n_missing <- df_clock_cz.9 |> filter(is.na(pgm_id)) |> nrow()
+  df_clock_cz.10 <- df_clock_cz.9 |> left_join(program_titles, by = join_by("titel_nl_lc"))
+  n_missing <- df_clock_cz.10 |> filter(is.na(pgm_id)) |> nrow()
   
+  # . check complete ----
   if (n_missing > 0) {
     flog.error("programs missing in 'entries'; quiting this job.", name = "clof")
     break
   }
   
-  # check length ----
-  wi_tot_minutes <- df_clock_cz.9 |> distinct(bc_ts, slot_minutes) |> mutate(total_minutes = sum(slot_minutes)) |> 
+  # . check length ----
+  wi_tot_minutes <- df_clock_cz.10 |> distinct(bc_ts, slot_minutes) |> mutate(total_minutes = sum(slot_minutes)) |> 
     head(1) |> select(total_minutes) |> pull()
   
   if (wi_tot_minutes != 10080L) {
-    flog.error(str_glue("cz_schedule: expected 10080 minutes, but got {wi_tot_minutes}; quiting this job."), name = "clof")
+    flog.error(str_glue("invalid clock length (2): expected 10080 minutes, but got {wi_tot_minutes}; quiting this job."), name = "clof")
     break
   }
 
+  # remove locked slots ----
+  df_locked <- locked_slots(pm_start = start_ts, pm_stop = stop_ts, pm_db = con) |> 
+    mutate(locked_slot_ts = ymd_hms(locked_slot, quiet = T, tz = tz_am), .keep = "none")
+  df_clock_cz.11 <- df_clock_cz.10 |> anti_join(df_locked, by = join_by(bc_ts == locked_slot_ts))
+  
+  # add originals ----
+  # Do this first, to prep adding replays later
+  df_clock_cz.12 <- df_clock_cz.11 |> filter(!is_rp)
+  func_result <- clock2db(pm_clock_tib = df_clock_cz.12, pm_db = con)
+  
   # TOT HIER ----
   break
 }
@@ -369,17 +394,7 @@ for (rn in seq_len(nrow(woj_schedule_w_ids.6))) {
     break
   }
   
-  # . check complete ----
-  cz_schedule_w_ids_missing <- df_afb |> filter(is.na(image_id))
-  
-  if (nrow(cz_schedule_w_ids_missing) > 0) {
-    flog.error("WorldOfJazz images are incomplete; quiting this job.", name = "clof")
-    break
-  }
-  
-  # . append ----
-  cz_schedule_w_ids.6 <- cz_schedule_w_ids.6 |> left_join(df_afb, by = join_by(afbeelding))
-  
+
   # check latest slot ----
   df_slots <- cpnm_chk_slots(pm_site_id = 2, pm_cpnm_db = con) |> 
     mutate(max_start_cz = ymd_hms(max_start_cz, tz = "Europe/Amsterdam"))
@@ -446,7 +461,7 @@ for (rn in seq_len(nrow(woj_schedule_w_ids.6))) {
   
   # exit MCL
   break
-}
+# }
 
 # Cleanup ----
 dbDisconnect(con)
