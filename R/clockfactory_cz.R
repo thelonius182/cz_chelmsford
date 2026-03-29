@@ -23,7 +23,7 @@ repeat {
   tz_am <- "Europe/Amsterdam"
   start_ts <- force_tz(clock_start_utc$next_week_start, tzone = tz_am)
   stop_ts   <- start_ts + days(7)
-  flog.info(str_glue("Show Thursday {logfmt_ts(start_ts)} to Thursday {logfmt_ts(stop_ts)}"), name = "clof")
+  flog.info(str_glue("Week: Thursday {logfmt_ts(start_ts)} to Thursday {logfmt_ts(stop_ts)}"), name = "clof")
   
   bc_week_ts <- tibble(
     ts = seq(from = start_ts, to = stop_ts - hours(1), by = "hour")
@@ -100,20 +100,21 @@ repeat {
                           paste0(bc_day_label, str_pad(bc_hour_start, side = "left", width = 2, pad = "0")),
                           slot)) |> 
     select(-bc_week_of_month, -bc_day_label, -bc_hour_start, -slot_replay) |> 
-    rename(slot_replay = slot_replay_4, bc_ts = ts, bc_clock_key = bc) 
+    rename(slot_replay = slot_replay_4, bc_ts = ts, bc_clock_key = bc) |> 
+    mutate(slot_replay = if_else(bc_type == "h", slot, slot_replay))
     
-  # add replay dates
+  # add "replay on"-dates
   prep_rp_ts <- df_clock_cz.3 |> select(slot, rp_on_ts = bc_ts)  
   df_clock_cz.4 <- df_clock_cz.3 |> left_join(prep_rp_ts, join_by(slot_replay == slot))
   
   # prep as replays ----
-  df_clock_rp <- df_clock_cz.4 |> filter(!is.na(rp_on_ts)) |> 
+  df_clock_rp <- df_clock_cz.4 |> filter(!is.na(rp_on_ts) | bc_type == "h") |> 
     select(bc_ts = rp_on_ts, slot = slot_replay, slot_minutes:bc_type) |> 
     mutate(is_rp = TRUE)
   
   # join origs & replays ----
   df_clock_cz.5 <- df_clock_cz.4 |> bind_rows(df_clock_rp) |> arrange(bc_ts) |>
-    filter(!if_all(slot_minutes:is_rp, is.na)) |> select(-slot_replay, -rp_on_ts) |> 
+    filter(!if_all(slot_minutes:is_rp, is.na) & (bc_type != "h" | !is.na(is_rp))) |> select(-slot_replay, -rp_on_ts) |> 
     mutate(is_rp = coalesce(is_rp, FALSE))
   
   # validate clock length ----
@@ -287,38 +288,59 @@ repeat {
   df_clock_cz.11 <- df_clock_cz.10 |> anti_join(df_locked, by = join_by(bc_ts == locked_slot_ts))
   
   # add originals ----
-  # Do this first, to prep adding replays later
+  # all replays within the current week need to exist as originals first!
   df_clock_cz.12 <- df_clock_cz.11 |> filter(!is_rp)
-  func_result <- clock2db(pm_clock_tib = df_clock_cz.12, pm_db = con)
+  job_id <- UUIDgenerate(use.time = FALSE) 
+  flog.info(str_glue("running job-id = {job_id}"), name = "clof")
+  func_result <- clock2db(pm_clock_tib = df_clock_cz.12, pm_job_id = job_id, pm_db = con)
   
-  # TOT HIER ----
-  break
-}
+  # . check bc-count ----
+  n_bcs_expected <- df_clock_cz.12 |> select(bc_ts) |> distinct() |> nrow()
+  sql_stmt <- glue_sql("SELECT count(distinct(dates->>'$.start')) as n
+                        FROM entries
+                        WHERE attributes->>'$.job_id' = {job_id}
+                          and type = 'broadcast';", .con = con)
+  n_bcs_added <- dbGetQuery(con, sql_stmt)
   
-  # add "replay of"-dates ----
-  for (rn in seq_len(nrow(df_clock_cz.9))) {
-
-    if (is.na(df_clock_cz.9$is_rp[rn]) | !df_clock_cz.9$is_rp[rn]) {
-      next
-    }
-    
-    pm_max_start <- if (str_match(df_clock_cz.9$bc_type[rn], "l|v")) {
-      start_ts
-    } else {
-      df_clock_cz.9$bc_ts[rn]
-    }
-    df_replay <- cpnm_uni_get(pm_pgm_id = df_clock_cz.9$pgm_id[rn],
-                              pm_max_start,
-                              pm_cpnm_db = con)
-    
-    if (is.na(df_replay$epi_id)) {
-      next
-    }
-    
-    df_clock_cz.9$replay_of_epi_id[rn] <- df_replay$epi_id
-    df_clock_cz.9$replay_of_ts[rn] <- df_replay$epi_start
+  if (n_bcs_added$n != n_bcs_expected) {
+    flog.error(str_glue("adding originals failed: expected {n_bcs_expected}, but got {n_bcs_added}; quiting this job."), 
+               name = "clof")
+    break
   }
   
+  # Exit from MCL
+  break
+}
+
+# TOT HIER ----
+
+# . get the replays ----
+df_clock_cz.13 <- df_clock_cz.11 |> filter(is_rp)
+
+
+  # add "replay of"-dates ----
+for (rn in seq_len(nrow(df_clock_cz.13))) {
+  
+  # 'live' broadcasts can't be replayed in the current week, as they need curating first; that won't happen until next
+  # Thursday. So replay an episode that was broadcast last week or earlier
+  # # pm_max_start <- case_when(str_match(df_clock_cz.13$bc_type[rn], "l|v") ~ start_ts,
+  # #                           df_clock_cz.13$bc_type[rn] == "h" & df_clock_cz.13$nipper_mogelijk[rn] != "N" ~ 
+  # } else {
+  #   df_clock_cz.13$bc_ts[rn]
+  # }
+  
+  df_replay <- cpnm_uni_get(pm_pgm_id = df_clock_cz.13$pgm_id[rn],
+                            pm_max_start,
+                            pm_cpnm_db = con)
+  
+  if (is.na(df_replay$epi_id)) {
+    next
+  }
+  
+  df_clock_cz.9$replay_of_epi_id[rn] <- df_replay$epi_id
+  df_clock_cz.9$replay_of_ts[rn] <- df_replay$epi_start
+}
+
 for (rn in seq_len(nrow(woj_schedule_w_ids.6))) {
   
   if (woj_schedule_w_ids.6$broadcast_type[rn] != "Universe") {
@@ -391,16 +413,6 @@ for (rn in seq_len(nrow(woj_schedule_w_ids.6))) {
   
   if (nrow(cz_schedule_w_ids_missing) > 0) {
     flog.error("WorldOfJazz-replays are incomplete; quiting this job.", name = "clof")
-    break
-  }
-  
-
-  # check latest slot ----
-  df_slots <- cpnm_chk_slots(pm_site_id = 2, pm_cpnm_db = con) |> 
-    mutate(max_start_cz = ymd_hms(max_start_cz, tz = "Europe/Amsterdam"))
-  
-  if (df_slots$max_start_cz >= start_ts) {
-    flog.error("Not all required slots are free; quiting this job.", name = "clof")
     break
   }
   

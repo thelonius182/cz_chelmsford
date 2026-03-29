@@ -149,6 +149,7 @@ cpnm_epi_bc_ins <- function(pm_pgm_id,
                             pm_site_id,
                             pm_bc_start,
                             pm_bc_minutes,
+                            pm_job_id,
                             pm_cpnm_db) {
   sql_stmt <- glue_sql("select title, slug from entries where id = {pm_pgm_id};", .con = pm_cpnm_db)
   df_cur_pgm <- dbGetQuery(pm_cpnm_db, sql_stmt)
@@ -161,6 +162,7 @@ cpnm_epi_bc_ins <- function(pm_pgm_id,
                            title,
                            slug,
                            description,
+                           attributes,
                            duration,
                            parent_id,
                            image_id,
@@ -173,6 +175,7 @@ cpnm_epi_bc_ins <- function(pm_pgm_id,
               cast({df_cur_pgm$slug} as json),        -- slug
               JSON_OBJECT('nl', {pm_descr_NL},        -- description
                           'en', {pm_descr_EN}),       
+              JSON_OBJECT('job_id', {pm_job_id}),     -- attributes: current clockfactory job-id
               {bc_seconds},                           -- duration
               {pm_pgm_id},                            -- parent_id
               {pm_img_id},                            -- image_id
@@ -191,6 +194,7 @@ cpnm_epi_bc_ins <- function(pm_pgm_id,
                            title,
                            slug,
                            dates,
+                           attributes,
                            duration,
                            parent_id,
                            site_id,
@@ -202,6 +206,7 @@ cpnm_epi_bc_ins <- function(pm_pgm_id,
               cast({df_cur_pgm$slug} as json),        -- slug
               JSON_OBJECT('start', {fmt_start_ts},    -- dates
                           'end', {fmt_stop_ts}),       
+              JSON_OBJECT('job_id', {pm_job_id}),     -- attributes: current clockfactory job-id
               {bc_seconds},                           -- duration
               {new_id_epi},                           -- parent_id
               {pm_site_id},                           -- site_id
@@ -232,6 +237,7 @@ cpnm_bc_ins <- function(pm_pgm_id,
                            title,
                            slug,
                            dates,
+                           attributes,
                            duration,
                            parent_id,
                            site_id,
@@ -243,6 +249,7 @@ cpnm_bc_ins <- function(pm_pgm_id,
               cast({df_cur_pgm$slug} as json),        -- slug
               JSON_OBJECT('start', {fmt_start_ts},    -- dates
                           'end', {fmt_stop_ts}),       
+              JSON_OBJECT('job_id', {pm_job_id}),     -- attributes: current clockfactory job-id
               {bc_seconds},                           -- duration
               {pm_epi_id},                            -- parent_id
               {pm_site_id},                           -- site_id
@@ -294,17 +301,17 @@ cpnm_txb_ins <- function(pm_epi_id,
   sql_res <- dbExecute(pm_cpnm_db, sql_stmt)
 }
 
-cpnm_epi_get <- function(pm_pgm_id,
-                         pm_start,
-                         pm_cpnm_db) {
-  sql_stmt <- glue_sql("select e.id as epi_id
-                        from entries p join entries e on e.parent_id = p.id
-                                       join entries b on b.parent_id = e.id
-                        where b.dates->>'$.start' = {pm_start}
-                          and p.id = {pm_pgm_id}
-                        ;", .con = pm_cpnm_db)
-  sql_res <- dbGetQuery(pm_cpnm_db, sql_stmt)
-}
+# cpnm_epi_get <- function(pm_pgm_id,
+#                          pm_start,
+#                          pm_cpnm_db) {
+#   sql_stmt <- glue_sql("select e.id as epi_id
+#                         from entries p join entries e on e.parent_id = p.id
+#                                        join entries b on b.parent_id = e.id
+#                         where b.dates->>'$.start' = {pm_start}
+#                           and p.id = {pm_pgm_id}
+#                         ;", .con = pm_cpnm_db)
+#   sql_res <- dbGetQuery(pm_cpnm_db, sql_stmt)
+# }
 
 cpnm_uni_get <- function(pm_pgm_id, pm_max_start, pm_cpnm_db) {
   sql_stmt <- glue_sql("select e.id as epi_id, 
@@ -330,32 +337,32 @@ cpnm_img_get <- function(pm_img_id, pm_cpnm_db) {
   sql_res <- dbGetQuery(pm_cpnm_db, sql_stmt)
 }
 
-cpnm_chk_slots <- function(pm_site_id, pm_cpnm_db) {
-  sql_stmt <- glue_sql("select max(dates->>'$.start') as max_start_cz 
-                        from entries 
-                        where type = 'broadcast' 
-                          and site_id = {pm_site_id}
-                          and deleted_at is null;",
-                       .con = pm_cpnm_db)
-  sql_res <- dbGetQuery(pm_cpnm_db, sql_stmt)
-}
+# cpnm_chk_slots <- function(pm_site_id, pm_cpnm_db) {
+#   sql_stmt <- glue_sql("select max(dates->>'$.start') as max_start_cz 
+#                         from entries 
+#                         where type = 'broadcast' 
+#                           and site_id = {pm_site_id}
+#                           and deleted_at is null;",
+#                        .con = pm_cpnm_db)
+#   sql_res <- dbGetQuery(pm_cpnm_db, sql_stmt)
+# }
 
-cpnm_chk_cz_rp <- function(pm_ts, pm_pgm_id, pm_cpnm_db) {
-  sql_stmt <- glue_sql("SELECT g.id AS pgm_id
-                        FROM entries AS b
-                        JOIN entries AS p ON p.id = b.parent_id
-                        JOIN entries AS g ON g.id = p.parent_id
-                        WHERE b.type = 'broadcast'
-                          AND b.site_id = 1
-                          AND CAST(JSON_UNQUOTE(JSON_EXTRACT(b.dates, '$.start')) AS DATETIME) = {pm_ts}
-                        limit 1
-                        ;", 
-                       .con = pm_cpnm_db)
-  sql_res <- dbGetQuery(pm_cpnm_db, sql_stmt)
-  sql_res$pgm_id == pm_pgm_id
-}
+# cpnm_chk_cz_rp <- function(pm_ts, pm_pgm_id, pm_cpnm_db) {
+#   sql_stmt <- glue_sql("SELECT g.id AS pgm_id
+#                         FROM entries AS b
+#                         JOIN entries AS p ON p.id = b.parent_id
+#                         JOIN entries AS g ON g.id = p.parent_id
+#                         WHERE b.type = 'broadcast'
+#                           AND b.site_id = 1
+#                           AND CAST(JSON_UNQUOTE(JSON_EXTRACT(b.dates, '$.start')) AS DATETIME) = {pm_ts}
+#                         limit 1
+#                         ;", 
+#                        .con = pm_cpnm_db)
+#   sql_res <- dbGetQuery(pm_cpnm_db, sql_stmt)
+#   sql_res$pgm_id == pm_pgm_id
+# }
 
-clock2db <- function(pm_clock_tib, pm_db) {
+clock2db <- function(pm_clock_tib, pm_job_id, pm_db) {
   
   # - some programs have 2 main genres, so have 2 records; treat them separately: 'a' for all columns,
   #   and 'b' just for the extra genre
@@ -376,6 +383,7 @@ clock2db <- function(pm_clock_tib, pm_db) {
                                       pm_site_id = 1L,
                                       pm_bc_start = cur_clock_a$bc_ts[rn],
                                       pm_bc_minutes = cur_clock_a$slot_minutes[rn],
+                                      pm_job_id,
                                       pm_cpnm_db = pm_db)
       # . genre ----
       # - add an `episode` taxonomable record for first genre
@@ -398,7 +406,7 @@ clock2db <- function(pm_clock_tib, pm_db) {
       # - add an `episode` taxonomable record for editors and production-role (txy-type colofon)
       txb_res <- cpnm_txb_edi_ins(pm_epi_id = fresh_epi_bc,
                                   pm_txy_id = cur_clock_a$ty_editor_id[rn],
-                                  pm_role_NL = cur_clock_a$production_role[rn],
+                                  pm_role_NL = cur_clock_a$productie[rn],
                                   pm_cpnm_db = pm_db)
     } else {
       # . replay ----
