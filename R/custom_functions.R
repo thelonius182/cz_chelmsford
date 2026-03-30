@@ -223,6 +223,7 @@ cpnm_bc_ins <- function(pm_pgm_id,
                         pm_site_id,
                         pm_bc_start,
                         pm_bc_minutes,
+                        pm_job_id,
                         pm_cpnm_db) {
   sql_stmt <- glue_sql("select title, slug from entries where id = {pm_pgm_id};", .con = pm_cpnm_db)
   df_cur_pgm <- dbGetQuery(pm_cpnm_db, sql_stmt)
@@ -418,4 +419,43 @@ clock2db <- function(pm_clock_tib, pm_job_id, pm_db) {
                                    pm_cpnm_db = pm_db)
     }
   }
+}
+
+epi_replays <- function(pm_pgm_id, pm_genre, pm_max_ts, pm_cpnm_db) {
+  sqlstmt <- glue_sql("WITH episodes AS (
+         SELECT e.id,
+                e.title->>'$.nl' AS epi_title
+         FROM entries e
+         WHERE e.parent_id = {pgm_id}
+           AND e.site_id = 1
+           AND e.deleted_at IS NULL
+     ),
+     broadcasts AS (
+         SELECT b.parent_id AS epi_id,
+                min(b.dates->>'$.start') AS bc_start
+         FROM entries b JOIN episodes e ON e.id = b.parent_id
+         WHERE b.site_id = 1
+           AND b.deleted_at IS NULL
+         GROUP BY b.parent_id
+     ),
+     base as (
+         SELECT
+         e.id AS epi_id,
+         e.epi_title,
+         b.bc_start,
+         (
+             SELECT GROUP_CONCAT(ty.name->>'$.nl' ORDER BY ty.name->>'$.nl' SEPARATOR '-')
+             FROM taxonomables tb JOIN taxonomies ty ON ty.id = tb.taxonomy_id
+                                                    AND ty.type = 'genre'
+                                                    AND ty.site_id = 1
+                                                    AND ty.deleted_at IS NULL
+             WHERE tb.taxonomable_id = e.id
+               AND tb.taxonomable_type = 'episode'
+         ) AS genre_name
+         FROM episodes e LEFT JOIN broadcasts b ON b.epi_id = e.id
+     )
+     select * from base
+     where genre_name = {pm_genre} and bc_start < {pm_max_ts}
+     ORDER BY bc_start DESC
+     limit 1;", .con = pm_cpnm_db)
 }

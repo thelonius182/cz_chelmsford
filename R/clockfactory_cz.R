@@ -315,7 +315,10 @@ repeat {
 # TOT HIER ----
 
 # . get the replays ----
-df_clock_cz.13 <- df_clock_cz.11 |> filter(is_rp)
+df_clock_cz.13 <- df_clock_cz.11 |> filter(is_rp) |> group_by(bc_ts) |>
+  mutate(genre_grp = str_c(sort(genre), collapse = "-")) |> ungroup() |> 
+  # replays only add a broadcast
+  select(bc_ts, slot, titel_nl_lc, slot_minutes, bc_type, nipper_mogelijk, pgm_id, genre_grp) |> distinct()
 
 
   # add "replay of"-dates ----
