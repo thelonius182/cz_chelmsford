@@ -12,12 +12,10 @@ cz_site_id <- 1L
 wj_site_id <- 2L
 fmt_ts <- stamp("1958-12-25 13:00:00", quiet = T, orders = "ymd HMS")
 source("R/custom_functions.R", encoding = "UTF-8")
+source("R/cpnm_db_setup.R", encoding = "UTF-8")  
 
 # > Main Control Loop ----
 repeat {
-  # connect to DB
-  source("R/cpnm_db_setup.R", encoding = "UTF-8")  
-  
   # Find start of week to build ----
   clock_start_utc <- start_of_cz_week(pm_cpnm_db = con)
   tz_am <- "Europe/Amsterdam"
@@ -161,7 +159,8 @@ repeat {
            intro_EN = `std.samenvatting-EN`,
            afbeelding = feat_img_ids,
            woj_bcid,
-           nipper_mogelijk) |> 
+           nipper_mogelijk,
+           episode_chain) |> 
     pivot_longer(cols = c(genre_1, genre_2), names_to = NULL, values_to = "genre", values_drop_na = TRUE) |> 
     mutate(titel_nl_lc = str_to_lower(titel_NL))
   
@@ -291,14 +290,16 @@ repeat {
   # all replays within the current week need to exist as originals first!
   df_clock_cz.12 <- df_clock_cz.11 |> filter(!is_rp)
   job_id <- UUIDgenerate(use.time = FALSE) 
-  flog.info(str_glue("running job-id = {job_id}"), name = "clof")
+  flog.info(str_glue("job = {job_id}"), name = "clof")
   func_result <- clock2db(pm_clock_tib = df_clock_cz.12, pm_job_id = job_id, pm_db = con)
   
   # . check bc-count ----
   n_bcs_expected <- df_clock_cz.12 |> select(bc_ts) |> distinct() |> nrow()
   sql_stmt <- glue_sql("SELECT count(distinct(dates->>'$.start')) as n
                         FROM entries
-                        WHERE attributes->>'$.job_id' = {job_id}
+                        WHERE deleted_at is null
+                          and site_id = 1
+                          and attributes->>'$.clockfactory_job' = {job_id}
                           and type = 'broadcast';", .con = con)
   n_bcs_added <- dbGetQuery(con, sql_stmt)
   
@@ -481,4 +482,4 @@ for (rn in seq_len(nrow(woj_schedule_w_ids.6))) {
 # Cleanup ----
 dbDisconnect(con)
 close_tunnel(tunnel)
-flog.info("Clockfactory CZ: job finished", name = "clof")
+flog.info("job finished", name = "clof")

@@ -169,19 +169,19 @@ cpnm_epi_bc_ins <- function(pm_pgm_id,
                            site_id,
                            user_id,
                            created_at)
-      VALUES ({new_id_epi},                           -- id
-              'episode',                              -- type
-              cast({df_cur_pgm$title} as json),       -- title 
-              cast({df_cur_pgm$slug} as json),        -- slug
-              JSON_OBJECT('nl', {pm_descr_NL},        -- description
+      VALUES ({new_id_epi},                                  -- id
+              'episode',                                     -- type
+              cast({df_cur_pgm$title} as json),              -- title 
+              cast({df_cur_pgm$slug} as json),               -- slug
+              JSON_OBJECT('nl', {pm_descr_NL},               -- description
                           'en', {pm_descr_EN}),       
-              JSON_OBJECT('job_id', {pm_job_id}),     -- attributes: current clockfactory job-id
-              {bc_seconds},                           -- duration
-              {pm_pgm_id},                            -- parent_id
-              {pm_img_id},                            -- image_id
-              {pm_site_id},                           -- site_id
-              5,                                      -- user_id admin/LvdA
-              NOW()                                   -- created_at
+              JSON_OBJECT('clockfactory_job', {pm_job_id}),  -- attributes
+              {bc_seconds},                                  -- duration
+              {pm_pgm_id},                                   -- parent_id
+              {pm_img_id},                                   -- image_id
+              {pm_site_id},                                  -- site_id
+              5,                                             -- user_id admin/LvdA
+              NOW()                                          -- created_at
       );", .con = pm_cpnm_db)
   sql_res <- dbExecute(pm_cpnm_db, sql_stmt)
   
@@ -200,18 +200,18 @@ cpnm_epi_bc_ins <- function(pm_pgm_id,
                            site_id,
                            user_id,
                            created_at)
-      VALUES ({new_id_bc},                            -- id
-              'broadcast',                            -- type
-              cast({df_cur_pgm$title} as json),       -- title 
-              cast({df_cur_pgm$slug} as json),        -- slug
-              JSON_OBJECT('start', {fmt_start_ts},    -- dates
-                          'end', {fmt_stop_ts}),       
-              JSON_OBJECT('job_id', {pm_job_id}),     -- attributes: current clockfactory job-id
-              {bc_seconds},                           -- duration
-              {new_id_epi},                           -- parent_id
-              {pm_site_id},                           -- site_id
-              5,                                      -- user_id admin/LvdA
-              NOW()                                   -- created_at
+      VALUES ({new_id_bc},                                        -- id
+              'broadcast',                                        -- type
+              cast({df_cur_pgm$title} as json),                   -- title 
+              cast({df_cur_pgm$slug} as json),                    -- slug
+              JSON_OBJECT('start', {fmt_start_ts},                -- dates
+                          'end', {fmt_stop_ts}),                   
+              JSON_OBJECT('clockfactory_job', {pm_job_id}),       -- attributes
+              {bc_seconds},                                       -- duration
+              {new_id_epi},                                       -- parent_id
+              {pm_site_id},                                       -- site_id
+              5,                                                  -- user_id admin/LvdA
+              NOW()                                               -- created_at
       );", .con = pm_cpnm_db)
   sql_res <- dbExecute(pm_cpnm_db, sql_stmt)
   
@@ -244,18 +244,18 @@ cpnm_bc_ins <- function(pm_pgm_id,
                            site_id,
                            user_id,
                            created_at)
-      VALUES ({new_id_bc},                            -- id
-              'broadcast',                            -- type
-              cast({df_cur_pgm$title} as json),       -- title 
-              cast({df_cur_pgm$slug} as json),        -- slug
-              JSON_OBJECT('start', {fmt_start_ts},    -- dates
-                          'end', {fmt_stop_ts}),       
-              JSON_OBJECT('job_id', {pm_job_id}),     -- attributes: current clockfactory job-id
-              {bc_seconds},                           -- duration
-              {pm_epi_id},                            -- parent_id
-              {pm_site_id},                           -- site_id
-              5,                                      -- user_id admin/LvdA
-              NOW()                                   -- created_at
+      VALUES ({new_id_bc},                                      -- id
+              'broadcast',                                      -- type
+              cast({df_cur_pgm$title} as json),                 -- title 
+              cast({df_cur_pgm$slug} as json),                  -- slug
+              JSON_OBJECT('start', {fmt_start_ts},              -- dates
+                          'end', {fmt_stop_ts}),                 
+              JSON_OBJECT('clockfactory_job', {pm_job_id}),     -- attributes
+              {bc_seconds},                                     -- duration
+              {pm_epi_id},                                      -- parent_id
+              {pm_site_id},                                     -- site_id
+              5,                                                -- user_id admin/LvdA
+              NOW()                                             -- created_at
       );", .con = pm_cpnm_db)
   sql_res <- dbExecute(pm_cpnm_db, sql_stmt)
 }
@@ -432,7 +432,7 @@ epi_replays <- function(pm_pgm_id, pm_genre, pm_max_ts, pm_cpnm_db) {
      ),
      broadcasts AS (
          SELECT b.parent_id AS epi_id,
-                min(b.dates->>'$.start') AS bc_start
+                max(b.dates->>'$.start') AS bc_start
          FROM entries b JOIN episodes e ON e.id = b.parent_id
          WHERE b.site_id = 1
            AND b.deleted_at IS NULL

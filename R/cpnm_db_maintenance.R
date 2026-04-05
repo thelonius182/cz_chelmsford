@@ -116,3 +116,27 @@ for (rn in seq_len(nrow(fix_these_editors))) {
                   .con = con)
   sql_result <- dbExecute(conn = con, statement = qry)
 }
+
+# CZ+WJ: fix EN-names in programs/slugs <2026-04-05>
+df_wpgidsinfo_lc <- df_raw_wpgidsinfo |> mutate(titel_nl_lc = str_to_lower(`titel-NL`))
+fix_these <- program_titles |> left_join(df_wpgidsinfo_lc, by = join_by(titel_nl_lc)) |> 
+  filter(!is.na(`key-modelrooster`)) |> 
+  select(pgm_id, titel_NL = `titel-NL`, titel_EN = `titel-EN`) |> distinct() |> arrange(titel_NL)
+
+for (rn in seq_len(nrow(fix_these))) {
+  tit_NL <- fix_these$titel_NL[rn]
+  tit_EN <- fix_these$titel_EN[rn]
+  slu_NL <- as_slug(tit_NL)
+  slu_EN <- as_slug(tit_EN)
+  cur_id <- fix_these$pgm_id[rn]
+  qry <- glue_sql("update entries 
+                   set title = JSON_OBJECT('nl', {tit_NL},
+                                           'en', {tit_EN}),
+                       slug = JSON_OBJECT('nl', {slu_NL},
+                                          'en', {slu_EN}),
+                       user_id = 5,
+                       updated_at = NOW()
+                   where id = {cur_id};", 
+                  .con = con)
+  sql_result <- dbExecute(conn = con, statement = qry)
+}

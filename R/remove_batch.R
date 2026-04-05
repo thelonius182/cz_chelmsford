@@ -3,8 +3,8 @@
 # - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
 
 # Use either one; glue_sql will substitute correctly using single quotes
-this_run <- job_id 
-# this_run <- "ff8f35d3-..."
+# this_run <- job_id
+this_run <- "9d7a5e3e-6271-4ba5-b94a-d4dbcd22fb2d"
 
 sql_result <- dbExecute(con, "DROP TEMPORARY TABLE IF EXISTS to_delete")
 
@@ -39,6 +39,12 @@ tryCatch({
     DELETE e
     FROM entries e
     JOIN to_delete d ON d.id = e.id
+  ")
+  
+  sql_result <- dbExecute(con, "
+    DELETE e
+    FROM entries e
+    JOIN to_delete d ON d.id = e.parent_id
   ")
   
   dbCommit(con)
