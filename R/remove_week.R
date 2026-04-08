@@ -8,7 +8,6 @@ end_ts  <- begin_ts + days(7L) - minutes(1L)
 sql_result <- dbExecute(con, "DROP TEMPORARY TABLE IF EXISTS to_delete")
 
 # prep episode id's ----
-# needed because the `entries`-table can't be updated if it's also in the `select from`-part
 sql_stmt <- glue_sql("
   CREATE TEMPORARY TABLE to_delete (
     id char(36) CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci PRIMARY KEY
@@ -32,16 +31,6 @@ flog.info(str_glue("Removing {fmt_ts(begin_ts)}, generic 'deleted_at' = {logfmt_
 dbBegin(con)
 
 tryCatch({
-  
-  # # hide taxonomies ----
-  # sql_stmt <- glue_sql("
-  #    update taxonomies set deleted_at = {fmt_ts(persist_now)}
-  #    where deleted_at is null
-  #      and id in (select taxonomy_id FROM taxonomables tb
-  #                 where tb.taxonomable_id in (select id from to_delete)
-  #                );", .con = con)
-  # sql_result <- dbExecute(con, sql_stmt)
-
   # remove taxonomables ----
   # no delete flag in this table
   sql_result <- dbExecute(con, "delete FROM taxonomables where taxonomable_id in (select id from to_delete)")

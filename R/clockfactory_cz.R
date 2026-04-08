@@ -304,10 +304,12 @@ repeat {
   n_bcs_added <- dbGetQuery(con, sql_stmt)
   
   if (n_bcs_added$n != n_bcs_expected) {
-    flog.error(str_glue("adding originals failed: expected {n_bcs_expected}, but got {n_bcs_added}; quiting this job."), 
+    flog.error(str_glue("adding originals failed: expected {n_bcs_expected}, but got {n_bcs_added$n}; quiting this job."), 
                name = "clof")
     break
   }
+  
+  flog.info(str_glue("added {n_bcs_added$n} fresh broadcasts"), name = "clof")
   
   # Exit from MCL
   break
