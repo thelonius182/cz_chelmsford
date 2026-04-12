@@ -3,7 +3,7 @@
 # - - - - - - - - - - - - -
 
 # init ----
-pacman::p_load(tidyr, dplyr, stringr, readr, lubridate, fs, futile.logger, readxl, DBI,
+pacman::p_load(tidyr, dplyr, stringr, readr, lubridate, fs, futile.logger, readxl, DBI, digest,
                purrr, httr, jsonlite, yaml, ssh, googledrive, openxlsx, glue, uuid, RMariaDB)
 config <- read_yaml("config.yaml")
 apf <- flog.appender(appender.file(config$log_appender_file_cz), "clof")
