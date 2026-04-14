@@ -1,3 +1,14 @@
+
+# downloads GD ----
+# . trigger GD-auth
+drive_auth(cache = ".secrets", email = "cz.teamservice@gmail.com")
+
+# . get episode chain labels from GD
+path_chains_cz <- "/home/lon/R_projects/cz_chelmsford/resources/chains_cz.xlsx"
+drive_download(file = cz_get_url("chains_cz"), overwrite = T, path = path_chains_cz)
+df_raw_chains <- cz_extract_sheet(path_chains_cz, sheet_name = "wp_chains")
+
+# rerun query on Nipper first
 wp_slot_alloc_raw <- read_tsv(file = "resources/clockfactory_slot_allocation.tsv", col_types = "cccc")
 
 wp_slot_alloc <- wp_slot_alloc_raw |> 
@@ -7,12 +18,20 @@ wp_slot_alloc <- wp_slot_alloc_raw |>
          wp_slot_rev = paste0(str_extract(wp_slot, ".{4}$"), "-", str_extract(wp_slot, "^\\d"))) |> 
   select(wp_title, wp_slot_rev, wp_post_date, wp_post_id) |> arrange(wp_post_id)
 
-wp_slot_uq <- wp_slot_alloc |> group_by(wp_title, wp_slot_rev) |> mutate(n = n()) |> ungroup() |> 
-  select(wp_title, wp_slot_rev, n) |> distinct() |> arrange(wp_title, wp_slot_rev)
-write_delim(wp_slot_uq, file = "resources/wp_slot_uq.tsv", delim = "\t")
+# split chain tibbles in conditional (a) and unconditional ones (b), to simplify joining with slots
+max_dt <- ymd_hms("2026-04-23 13:00:00", tz = "Europe/Amsterdam")
+df_chains_a <- df_raw_chains |> filter(!is.na(wp_slot_rev))
+df_joined_slots_a <- wp_slot_alloc |> inner_join(df_chains_a, by = join_by(wp_title, wp_slot_rev)) |> 
+  filter(wp_post_date < max_dt) |> select(-wp_slot_rev)
+df_chains_b <- df_raw_chains |> filter(is.na(wp_slot_rev))
+df_joined_slots_b <- wp_slot_alloc |> inner_join(df_chains_b, by = join_by(wp_title)) |> 
+  filter(wp_post_date < max_dt) |> select(-wp_slot_rev.x, -wp_slot_rev.y)
+
+df_joined_slots_backfill <- df_joined_slots_a |> bind_rows(df_joined_slots_b) |> arrange(episode_chain, wp_post_date)
+
 dbCreateTable(
   con,
-  "legacy_editors",
+  "salsa_episode_chains",
   fields = c(
     wp_post_id = "INT",
     wp_colofon = "VARCHAR(256) CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci"

@@ -1,9 +1,9 @@
 # insert program ----
 ins_result <- 
-  cpnm_pgm_ins(pm_title_NL = "Framework 2",
-               pm_title_EN = "Framework 2",
-               pm_descr_NL = "Open uw oren en reis mee door het geluid van de wereld.",
-               pm_descr_EN = "Open your ears and listen to the sounds of the world.",
+  cpnm_pgm_ins(pm_title_NL = "Schatgraven",
+               pm_title_EN = "Treasure Hunting",
+               pm_descr_NL = "Een duik in de archieven om luisteraars te verrassen met verborgen meesterwerken en vergeten opnames.",
+               pm_descr_EN = "A dive into the archives to surprise listeners with hidden masterpieces and forgotten recordings.",
                pm_cpnm_db = con)
 
 # insert editor ----

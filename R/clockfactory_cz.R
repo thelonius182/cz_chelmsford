@@ -145,7 +145,7 @@ repeat {
   #   bind_rows(df_replays) |> arrange(ts, rp_of_ts) |> group_by(ts) |> mutate(rn = row_number()) |> ungroup() |> 
   #   filter(rn == 1 & !is.na(mr_key)) |> select(-rn)
   
-  # link clock details ----
+  # link catalogue details ----
   df_clock_cz.6 <- df_clock_cz.5 |> 
     left_join(df_raw_wpgidsinfo, by = join_by(bc_clock_key == `key-modelrooster`)) |> 
     select(bc_ts:is_rp, 
@@ -160,7 +160,7 @@ repeat {
            afbeelding = feat_img_ids,
            woj_bcid,
            nipper_mogelijk,
-           episode_chain) |> 
+           episode_chain = `episode-chain`) |> 
     pivot_longer(cols = c(genre_1, genre_2), names_to = NULL, values_to = "genre", values_drop_na = TRUE) |> 
     mutate(titel_nl_lc = str_to_lower(titel_NL))
   
@@ -170,7 +170,14 @@ repeat {
   missing_gi <- df_clock_cz.6 |> filter(is.na(titel_NL)) |> nrow()
   
   if (missing_gi > 0) {
-    flog.error("clock details are incomplete; quiting this job.", name = "clof")
+    flog.error("clock details from catalogue are incomplete (title); quiting this job.", name = "clof")
+    break
+  }
+  
+  missing_gi <- df_clock_cz.6 |> filter(is.na(episode_chain)) |> nrow()
+  
+  if (missing_gi > 0) {
+    flog.error("clock details from catalogue are incomplete (episode chain); quiting this job.", name = "clof")
     break
   }
   
@@ -244,9 +251,9 @@ repeat {
                 SELECT LOWER(p.title->>'$.nl') AS titel_nl_lc,
                        p.id AS pgm_id,
                        COUNT(*) AS n_bcs
-                FROM entries p JOIN entries e ON e.parent_id = p.id
+                FROM entries p LEFT JOIN entries e ON e.parent_id = p.id
                                              AND e.deleted_at IS NULL
-                               JOIN entries b ON b.parent_id = e.id
+                               LEFT JOIN entries b ON b.parent_id = e.id
                                              AND b.deleted_at IS NULL
                 WHERE p.type = 'program'
                   AND p.site_id IN (1, 2)
@@ -290,7 +297,7 @@ repeat {
   # all replays within the current week need to exist as originals first!
   df_clock_cz.12 <- df_clock_cz.11 |> filter(!is_rp)
   job_id <- UUIDgenerate(use.time = FALSE) 
-  flog.info(str_glue("job = {job_id}"), name = "clof")
+  flog.info(str_glue("starting clock2db, job = {job_id}"), name = "clof")
   func_result <- clock2db(pm_clock_tib = df_clock_cz.12, pm_job_id = job_id, pm_db = con)
   
   # . check bc-count ----
