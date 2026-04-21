@@ -5,13 +5,31 @@
 # init ----
 pacman::p_load(tidyr, dplyr, stringr, readr, lubridate, fs, futile.logger, readxl, DBI, digest,
                purrr, httr, jsonlite, yaml, ssh, googledrive, openxlsx, glue, uuid, RMariaDB)
+
 config <- read_yaml("config.yaml")
 apf <- flog.appender(appender.file(config$log_appender_file_cz), "clof")
 flog.info("Building a programme clock for CZ", name = "clof")
-cz_site_id <- 1L
-wj_site_id <- 2L
 fmt_ts <- stamp("1958-12-25 13:00:00", quiet = T, orders = "ymd HMS")
+
+SITE <- list(
+  CONCERTZENDER = 1L,
+  WORLD_OF_JAZZ = 2L
+)
+
+STEP <- list(
+  FACTORY = 10L,
+  EDITOR  = 20L,
+  DESK    = 30L,
+  PLAYOUT = 99L
+)
+
+step_lookup <- tibble(
+  step = c(10L, 20L, 30L, 99L),
+  step_name = c("FACTORY", "EDITOR", "DESK", "PLAYOUT")
+)
+
 source("R/custom_functions.R", encoding = "UTF-8")
+# connect to CPNM-database ----
 source("R/cpnm_db_setup.R", encoding = "UTF-8")  
 
 # > Main Control Loop ----
@@ -20,9 +38,63 @@ repeat {
   clock_start_utc <- start_of_cz_week(pm_cpnm_db = con)
   tz_am <- "Europe/Amsterdam"
   start_ts <- force_tz(clock_start_utc$next_week_start, tzone = tz_am)
-  stop_ts   <- start_ts + days(7)
+  stop_ts   <- start_ts + days(7L)
   flog.info(str_glue("Week: Thursday {logfmt_ts(start_ts)} to Thursday {logfmt_ts(stop_ts)}"), name = "clof")
   
+  # synchronize episodes ----
+  sql_stmt <- "select * from episode_chain;"
+  db_chain <- dbGetQuery(con, sql_stmt)
+  
+  sql_stmt <- "select * from episode_chain_item;"
+  db_chain_item <- dbGetQuery(con, sql_stmt)
+  
+  sql_stmt <- "
+   select parent_id as episode_entry_id, 
+          dates->>'$.start' as bc_start
+   from entries 
+   where parent_id is not null
+     and type = 'broadcast' 
+     and deleted_at is null;"
+  db_broadcasts <- dbGetQuery(con, sql_stmt)
+  db_broadcasts_ts <- db_broadcasts |> mutate(bc_start_ts = ymd_hms(bc_start, quiet = T, tz = "Europe/Amsterdam")) |> 
+    arrange(episode_entry_id, bc_start_ts) |> group_by(episode_entry_id) |> mutate(rn = row_number()) |> ungroup() |> 
+    filter(rn == 1) |> select(-bc_start, -rn)
+  
+  # . update chain items ----
+  # <TEST>
+  # df_stale_episodes <- db_chain_item |> inner_join(db_broadcasts_ts, by = join_by(episode_entry_id)) |> 
+  #   filter(chain_id == 1 & position %in% c(3, 4))
+  # </TEST>
+  df_stale_episodes <- db_chain_item |> inner_join(db_broadcasts_ts, by = join_by(episode_entry_id)) |> 
+    filter(step_completed_last != STEP$PLAYOUT & bc_start_ts < start_ts)
+  
+  for (rn in seq_len(nrow(df_stale_episodes))) {
+    log_chain <- db_chain |> filter(chain_id == df_stale_episodes$chain_id[rn])
+    flog.info(
+      str_glue("{log_chain$label}.{df_stale_episodes$position[rn]} was played on {logfmt_ts(df_stale_episodes$bc_start_ts[rn])}"), 
+      name = "clof"
+    )
+    dbExecute(
+      con,
+      "update episode_chain_item set step_completed_last = 99
+       where chain_id = ? and position = ?
+      ",
+      params = list(df_stale_episodes$chain_id[rn], df_stale_episodes$position[rn])
+    )
+  }
+  
+  # . reload ----
+  #   updated chain items
+  if (nrow(df_stale_episodes) > 0) {
+    sql_stmt <- "select * from episode_chain_item;"
+    db_chain_item <- dbGetQuery(con, sql_stmt)
+  }
+  
+  df_latest_episodes <- db_chain |> mutate(max_pos = next_position - 1L) |> 
+    inner_join(db_chain_item, by = join_by(chain_id, max_pos == position)) |> 
+    left_join(db_broadcasts_ts, by = join_by(episode_entry_id))
+  
+  # build calendar ----
   bc_week_ts <- tibble(
     ts = seq(from = start_ts, to = stop_ts - hours(1), by = "hour")
   )
@@ -123,28 +195,6 @@ repeat {
     break
   }
   
-  # cz_weekdays <- c("ma", "di", "wo", "do", "vr", "za", "zo")
-  # 
-  # df_replays <- df_clock_cz.4 |> filter(!is.na(hh_formule) & (bc_cycle == "h" | is.na(bc_cycle))) |> 
-  #   rename(bc_ts = ts) |> 
-  #   left_join(bc_week, by = join_by(hh_day == bc_day_label, rp_start == bc_hour_start)) |> 
-  #   select(-bc_week_of_month) |> 
-  #   rename(rp_on_ts = ts, rp_on_day = hh_day, rp_on_start = rp_start, rp_formula = hh_formule, rp_on_offset = hh_offset) |> 
-  #   mutate(rp_of_ts = rp_on_ts - days(rp_on_offset),
-  #          rp_of_ts = update(rp_of_ts, hour = bc_hour_start),
-  #          rp_of_weekblock = 1 + (mday(rp_of_ts) - 1) %/% 7,
-  #          rp_of_day = c("ma", "di", "wo", "do", "vr", "za", "zo")[wday(rp_of_ts, week_start = 1)],
-  #          rp_of_start = hour(rp_of_ts)) |> 
-  #   select(rp_on_ts, rp_on_day, rp_on_start, mr_key:bc_minutes, rp_of_ts:rp_of_start, rp_formula) |> 
-  #   left_join(df_clock_cz.3, by = join_by(rp_of_weekblock == bc_week_of_month,
-  #                                         rp_of_day == bc_day_label,
-  #                                         rp_of_start == bc_hour_start))
-  #   # rename(ts = rp_on_ts, bc_day_label = rp_on_day, bc_hour_start = rp_on_start)
-  #   
-  # df_clock_cz.5 <- df_clock_cz.4 |> select(ts, bc_day_label, bc_hour_start, mr_key, bc_minutes, rp_formula = hh_formule) |> 
-  #   bind_rows(df_replays) |> arrange(ts, rp_of_ts) |> group_by(ts) |> mutate(rn = row_number()) |> ungroup() |> 
-  #   filter(rn == 1 & !is.na(mr_key)) |> select(-rn)
-  
   # link catalogue details ----
   df_clock_cz.6 <- df_clock_cz.5 |> 
     left_join(df_raw_wpgidsinfo, by = join_by(bc_clock_key == `key-modelrooster`)) |> 
@@ -208,15 +258,16 @@ repeat {
             where type = 'colofon'
               and deleted_at is null
               and site_id in (1, 2)
+              and name->>'$.en' is not null
             order by 1
             ;"
   ty_editors <- dbGetQuery(con, query)
   df_clock_cz.8 <- df_clock_cz.7 |> left_join(ty_editors, by = join_by("redacteurs" == "editor_name"))
   
   # . check complete ----
-  n_missing <- df_clock_cz.8 |> filter(is.na(ty_editor_id)) |> select(redacteurs) |> distinct() |> nrow()
+  df_missing <- df_clock_cz.8 |> filter(is.na(ty_editor_id)) |> select(redacteurs) |> distinct()
   
-  if (n_missing > 0) {
+  if (nrow(df_missing) > 0) {
     flog.error("editors missing in the taxonomy; quiting this job.", name = "clof")
     break
   }
@@ -248,17 +299,19 @@ repeat {
   
   # programs ----
   query <- "WITH counts AS (
-                SELECT LOWER(p.title->>'$.nl') AS titel_nl_lc,
+                SELECT LOWER(p.title_nl) AS titel_nl_lc,
                        p.id AS pgm_id,
-                       COUNT(*) AS n_bcs
+                       COUNT(b.id) AS n_bcs
                 FROM entries p LEFT JOIN entries e ON e.parent_id = p.id
+                                             and e.type = 'episode'
                                              AND e.deleted_at IS NULL
                                LEFT JOIN entries b ON b.parent_id = e.id
+                                             and b.type = 'broadcast'
                                              AND b.deleted_at IS NULL
                 WHERE p.type = 'program'
-                  AND p.site_id IN (1, 2)
                   AND p.deleted_at IS NULL
-                GROUP BY LOWER(p.title->>'$.nl'),
+                  AND p.site_id IN (1, 2)
+                GROUP BY LOWER(p.title_nl),
                          p.id
             ), ranked AS (SELECT titel_nl_lc,
                                  pgm_id,
@@ -288,26 +341,22 @@ repeat {
     break
   }
 
-  # remove locked slots ----
-  df_locked <- locked_slots(pm_start = start_ts, pm_stop = stop_ts, pm_db = con) |> 
+  # # remove locked slots ----
+  df_locked <- locked_slots(pm_start = start_ts, pm_stop = stop_ts, pm_db = con) |>
     mutate(locked_slot_ts = ymd_hms(locked_slot, quiet = T, tz = tz_am), .keep = "none")
   df_clock_cz.11 <- df_clock_cz.10 |> anti_join(df_locked, by = join_by(bc_ts == locked_slot_ts))
   
-  # add originals ----
-  # all replays within the current week need to exist as originals first!
+  # > Add fresh episodes to DB ----
+  # fresh first, so replays within the current week can find them
   df_clock_cz.12 <- df_clock_cz.11 |> filter(!is_rp)
   job_id <- UUIDgenerate(use.time = FALSE) 
-  flog.info(str_glue("starting clock2db, job = {job_id}"), name = "clof")
-  func_result <- clock2db(pm_clock_tib = df_clock_cz.12, pm_job_id = job_id, pm_db = con)
+  flog.info(str_glue("adding clock to database, job = {job_id}"), name = "clof")
+  func_result <- clock2db(pm_clock_tib = df_clock_cz.11, pm_job_id = job_id, pm_epi_step = STEP$FACTORY, pm_db = con)
   
   # . check bc-count ----
-  n_bcs_expected <- df_clock_cz.12 |> select(bc_ts) |> distinct() |> nrow()
-  sql_stmt <- glue_sql("SELECT count(distinct(dates->>'$.start')) as n
-                        FROM entries
-                        WHERE deleted_at is null
-                          and site_id = 1
-                          and attributes->>'$.clockfactory_job' = {job_id}
-                          and type = 'broadcast';", .con = con)
+  n_bcs_expected <- df_clock_cz.11 |> select(bc_ts) |> distinct() |> nrow()
+  sql_stmt <- glue_sql("select count(*) as n from episode_chain_item 
+                        where clockfactory_job = {job_id};", .con = con)
   n_bcs_added <- dbGetQuery(con, sql_stmt)
   
   if (n_bcs_added$n != n_bcs_expected) {
@@ -325,13 +374,16 @@ repeat {
 # TOT HIER ----
 
 # . get the replays ----
-df_clock_cz.13 <- df_clock_cz.11 |> filter(is_rp) |> group_by(bc_ts) |>
-  mutate(genre_grp = str_c(sort(genre), collapse = "-")) |> ungroup() |> 
-  # replays only add a broadcast
-  select(bc_ts, slot, titel_nl_lc, slot_minutes, bc_type, nipper_mogelijk, pgm_id, genre_grp) |> distinct()
+# replays only add a broadcast
+df_clock_cz.13 <- df_clock_cz.11 |> filter(is_rp) |> 
+  select(bc_ts, titel_nl_lc, slot_minutes, bc_type, nipper_mogelijk, episode_chain) |> distinct()
 
+# get reusable episodes ----
+# . if a broadcast is cancelled, its episode can be reused, so no need to add a new one.
 
-  # add "replay of"-dates ----
+  filter(is.na(dates))
+
+# add "replay of"-dates ----
 for (rn in seq_len(nrow(df_clock_cz.13))) {
   
   # 'live' broadcasts can't be replayed in the current week, as they need curating first; that won't happen until next

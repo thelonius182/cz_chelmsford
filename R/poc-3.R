@@ -1,150 +1,46 @@
-# prep modelrooster en wp-gidsinfo tbv de koppeling met CPNM-id's
-pacman::p_load(tidyr, dplyr, stringr, readr, lubridate, fs, futile.logger, readxl, DBI,
-               purrr, httr, jsonlite, yaml, ssh, googledrive, openxlsx, glue, uuid, RMariaDB)
-
-config <- read_yaml("config.yaml")
-source("R/custom_functions.R", encoding = "UTF-8")
-
-# downloads GD ------------------------------------------------------------
-
-# trigger GD-auth
+# trigger GD-auth ----
 drive_auth(cache = ".secrets", email = "cz.teamservice@gmail.com")
 
-# Roosters 3.0 ophalen bij GD
-path_roosters <- "/home/lon/R_projects/cz_chelmsford/resources/roosters.xlsx"
-drive_download(file = cz_get_url("roosters"), overwrite = T, path = path_roosters)
+# clockmodel from GD ----
+path_clockmodel_cz <- "/home/lon/R_projects/cz_chelmsford/resources/modelklok_cz.xlsx"
+drive_download(file = cz_get_url("modelklok_cz"), overwrite = T, path = path_clockmodel_cz)
 
-# WP-gids-info ophalen bij GD
-path_wp_gidsinfo <- "/home/lon/R_projects/cz_chelmsford/resources/wordpress_gidsinfo.xlsx"
-drive_download(file = cz_get_url("wordpress_gidsinfo"), overwrite = T, path = path_wp_gidsinfo)
+# clockcatalogue from GD ----
+path_clockcatalogue <- "/home/lon/R_projects/cz_chelmsford/resources/klokcatalogus.xlsx"
+drive_download(file = cz_get_url("wordpress_gidsinfo"), overwrite = T, path = path_clockcatalogue)
 
-# sheets als df -----------------------------------------------------------
-tbl_raw_zenderschema <- cz_extract_sheet(path_roosters, sheet_name = paste0("modelrooster-", config$modelrooster_versie))
-tbl_raw_wpgidsinfo <- cz_extract_sheet(path_wp_gidsinfo, sheet_name = "gids-info")
+# sheets as df ----
+df_clockmodel_cz_raw <- cz_extract_sheet(path_clockmodel_cz, sheet_name = "cz-data")
+df_clockcatalogue_raw <- cz_extract_sheet(path_clockcatalogue, sheet_name = "gids-info")
 
-# zenderschema ------------------------------------------------------------
-tbl_zenderschema.1 <- tbl_raw_zenderschema |> 
-  mutate(start = str_pad(string = start, side = "left", width = 5, pad = "0"), 
-         slot = paste0(str_sub(dag, start = 1, end = 2), start)
-  ) |> 
-  rename(hh_formule = `hhOffset-dag.uur`,
-         wekelijks = `elke week`,
-         AB_cyclus = `twee-wekelijks`,
-         cyclus_A = A,
-         cyclus_B = B,
-         week_1 = `week 1`,
-         week_2 = `week 2`,
-         week_3 = `week 3`,
-         week_4 = `week 4`,
-         week_5 = `week 5`
-  ) 
+# tidy clockmodel ----
+df_clockmodel_cz_raw <- df_clockmodel_cz_raw |> rename(slot_key = slot) |> 
+  mutate(slot_minutes = as.integer(min), .keep = "unused", .after = slot_key)
+mk_weekly <- df_clockmodel_cz_raw |> filter(!is.na(wekelijks)) |> select(1:6) |> 
+  rename(catalg_key = wekelijks, prod_type = te)
+mk_biweekly<- df_clockmodel_cz_raw |> filter(!is.na(`twee-wekelijks`)) |> select(1:3, 9:11) |> 
+  rename(catalg_key = `twee-wekelijks`) |> pivot_longer(cols = c(A, B), names_to = "cycle", values_to = "prod_type")
+mk_week.1 <- df_clockmodel_cz_raw |> filter(!is.na(`week 1`)) |> select(1:4, catalg_key = `week 1`, prod_type = t1) |> 
+  mutate(block = 1L)
+mk_week.2 <- df_clockmodel_cz_raw |> filter(!is.na(`week 2`)) |> select(1:4, catalg_key = `week 2`, prod_type = t2) |> 
+  mutate(block = 2L, slot_minutes = if_else(slot_key == "wo20", 120L, slot_minutes)) |> filter(slot_key != "wo21")
+mk_week.3 <- df_clockmodel_cz_raw |> filter(!is.na(`week 3`)) |> select(1:4, catalg_key = `week 3`, prod_type = t3) |> 
+  mutate(block = 3L)
+mk_week.4 <- df_clockmodel_cz_raw |> filter(!is.na(`week 4`)) |> select(1:4, catalg_key = `week 4`, prod_type = t4) |> 
+  mutate(block = 4L, slot_minutes = if_else(slot_key == "wo20", 120L, slot_minutes)) |> filter(slot_key != "wo21")
+mk_week.5 <- df_clockmodel_cz_raw |> filter(!is.na(`week 5`)) |> select(1:4, catalg_key = `week 5`, prod_type = t5) |> 
+  mutate(block = 5L)
 
-tbl_zenderschema.2 <- tbl_zenderschema.1 |>
-  select(-starts_with("r"), -starts_with("b"), -starts_with("t", ignore.case = F), -dag, -start, -Toon) |>  
-  select(slot, hh_formule, everything()) |> 
-  pivot_longer(names_to = "wanneer", cols = starts_with("week_"), values_to = "mr_key") 
-
-tbl_zenderschema.3 <- tbl_zenderschema.2 |> 
-  mutate(mr_key = if_else(!is.na(mr_key), mr_key, if_else(!is.na(wekelijks), wekelijks, AB_cyclus))) |> 
-  select(mr_key) |> distinct() 
-
-tbl_zenderschema.4 <- tbl_zenderschema.3 |> 
-  left_join(tbl_raw_wpgidsinfo, by = join_by(mr_key == `key-modelrooster`)) |> 
-  select(moro_key = mr_key,
-         woj_bcid,
-         titel_NL = `titel-NL`,
-         titel_EN = `titel-EN`,
-         productie = `productie-1-taak`,
-         redacteurs = `productie-1-mdw`,
-         genre_1 = `genre-1-NL`,
-         genre_2 = `genre-2-NL`,
-         intro_NL = `std.samenvatting-NL`,
-         intro_EN = `std.samenvatting-EN`,
-         afbeelding = feat_img_ids
-  ) |> pivot_longer(cols = c(genre_1, genre_2), 
-                    names_to = NULL, 
-                    values_to = "genre", 
-                    values_drop_na = TRUE) |> arrange(moro_key) |> 
-  mutate(titel_nl_lc = str_to_lower(titel_NL))
-
-uniques_titles_cz <- tbl_zenderschema.4 |> select(titel_NL, titel_EN) |> distinct() |> arrange(titel_NL)
-
-# prepare tunnel/database settings
-source("R/cpnm_db_setup.R", encoding = "UTF-8")
-
-# Main Control Loop
-repeat {
-  # genres in 'taxonomies'-table
-  query <- "select name->>'$.nl' as genre_NL, 
-                   id as ty_genre_id 
-            from taxonomies 
-            where type = 'genre' 
-              and site_id in (1, 2)
-              and name->>'$.nl' not in ('Algemeen', 'World of Jazz')
-            order by 1
-            ;"
-  
-  ty_genres <- dbGetQuery(con, query)
-
-  tbl_w_ids_1 <- tbl_zenderschema.4 |> left_join(ty_genres, by = join_by(genre == genre_NL))
-  tbl_w_ids_1_missing <- tbl_w_ids_1 |> filter(is.na(ty_genre_id))
-  
-  if (nrow(tbl_w_ids_1_missing) > 0) {
-    print("genres missing in the taxonomy; quiting this job.")
-    break
-  }
-  
-  # editors in 'taxonomies'-table
-  query <- "select name->>'$.nl' as editor_name, 
-                   id as ty_editor_id 
-            from taxonomies 
-            where type = 'colofon'
-            order by 1
-            ;"
-  ty_editors <- dbGetQuery(con, query)
-  tbl_w_ids_2 <- tbl_w_ids_1 |> 
-    left_join(ty_editors, by = join_by("redacteurs" == "editor_name"))
-  
-  tbl_w_ids_2_missing <- tbl_w_ids_2 |> filter(is.na(ty_editor_id)) |> select(redacteurs) |> distinct()
-  
-  if (nrow(tbl_w_ids_2_missing) > 0) {
-    print("editors missing in the taxonomy; quiting this job.")
-    break
-  }
-  
-  query <- "with ds1 as (
-       select lower(p.title->>'$.nl') as titel_nl_lc, 
-              p.id as pgm_id,
-              b.dates
-       from entries p join entries e on e.parent_id = p.id
-                      join entries b on b.parent_id = e.id
-       where p.type = 'program' 
-  ), ds2 as (
-       select titel_nl_lc, pgm_id, count(*) as n_bcs
-       from ds1
-       group by titel_nl_lc, pgm_id
-  ), ds3 as (
-       select ds2.*,
-       ROW_NUMBER() OVER (PARTITION BY titel_nl_lc
-   	    			     ORDER BY n_bcs desc) AS rn
-       from ds2
-  )
-  select titel_nl_lc, pgm_id from ds3 where rn = 1 order by 1;"
-  program_titles <- dbGetQuery(con, query)
-  # program_titles <- program_titles_raw |> mutate(pgm_title_NL = str_replace_all(pgm_title_NL, "&amp;", "&"))
-  tbl_w_ids_3 <- tbl_w_ids_2 |> left_join(program_titles, by = join_by("titel_nl_lc"))
-  
-  tbl_w_ids_3_missing <- tbl_w_ids_3 |> filter(is.na(pgm_id))
-  
-  if (nrow(tbl_w_ids_3_missing) > 0) {
-    print("programs missing in 'entries'-table; quiting this job.")
-    break
-  }
-  
-  # exit MCL
-  break
-}
-
-# Cleanup
-dbDisconnect(con)
-close_tunnel(tunnel)
+# build a clock ----
+bc_week_ts <- tibble(ts = seq(from = start_ts, to = stop_ts - hours(1), by = "hour"))
+df_calendar <- add_bc_cols(bc_week_ts, ts) |> 
+  mutate(cycle = if_else(bc_day_label == "do" & bc_hour_start == 13, week_label(ts), NA_character_)) |> 
+  fill(cycle, .direction = "down") |> select(slot = ts, slot_key, block = bc_week_of_month, cycle)
+df_clock_cz_weekly <- df_calendar |> inner_join(mk_weekly, by = join_by(slot_key))
+df_clock_cz_biweekly <- df_calendar |> inner_join(mk_biweekly, by = join_by(slot_key, cycle))
+mk_5_weeks <- mk_week.1 |> bind_rows(mk_week.2) |>
+                           bind_rows(mk_week.3) |>
+                           bind_rows(mk_week.4) |>
+                           bind_rows(mk_week.5)
+df_clock_cz_5_weeks <- df_calendar |> inner_join(mk_5_weeks, by = join_by(slot_key, block))
+df_clock_cz <- df_clock_cz_weekly |> bind_rows(df_clock_cz_biweekly) |> bind_rows(df_clock_cz_5_weeks) |> arrange(slot)

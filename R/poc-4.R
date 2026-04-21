@@ -1,48 +1,3 @@
-append_chain_item <- function(con, label, state, clockfactory_job) {
-  dbWithTransaction(con, {
-    dbExecute(
-      con,
-      "
-      INSERT INTO episode_chain (label, next_position)
-      VALUES (?, 1)
-      ON DUPLICATE KEY UPDATE
-        chain_id = LAST_INSERT_ID(chain_id)
-      ",
-      params = list(label)
-    )
-    
-    chain_id <- dbGetQuery(
-      con,
-      "SELECT LAST_INSERT_ID() AS chain_id"
-    )$chain_id[[1]]
-    
-    dbExecute(
-      con,
-      "
-      UPDATE episode_chain
-      SET next_position = LAST_INSERT_ID(next_position + 1)
-      WHERE chain_id = ?
-      ",
-      params = list(chain_id)
-    )
-    
-    position <- dbGetQuery(
-      con,
-      "SELECT LAST_INSERT_ID() - 1 AS position"
-    )$position[[1]]
-    
-    dbExecute(
-      con,
-      "
-      INSERT INTO episode_chain_item (chain_id, position, state, clockfactory_job)
-      VALUES (?, ?, ?, ?)
-      ",
-      params = list(chain_id, position, state, clockfactory_job)
-    )
-    
-    tibble(chain_id = chain_id, position = position)
-  })
-}
 
 extract_keywords <- function(x,
                              stop_words = c(
@@ -136,3 +91,21 @@ slug8 <- function(x,
 }
 
 cz_slugs <- cz_titles |> mutate(slug = slug8(extract_keywords(wp_title)))
+
+STEP <- list(
+  FACTORY = 10L,
+  EDITOR  = 20L,
+  DESK    = 30L,
+  PLAYOUT = 99L
+)
+
+step_lookup <- tibble(
+  step = c(10L, 20L, 30L, 99L),
+  step_name = c("FACTORY", "EDITOR", "DESK", "PLAYOUT")
+)
+
+jobs <- tibble(id = 1:5,
+               latest_completed_step = c(STEP$FACTORY, STEP$EDITOR, STEP$DESK, STEP$PLAYOUT, STEP$EDITOR))
+
+planned_jobs <- jobs |> filter(latest_completed_step < STEP$PLAYOUT) |> 
+  left_join(step_lookup, by = join_by(latest_completed_step == step))

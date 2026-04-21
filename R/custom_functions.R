@@ -19,12 +19,13 @@ add_bc_cols <- function(data, ts_col, tz = "Europe/Amsterdam") {
   
   day_map <- c("zo","ma","di","wo","do","vr","za")  # lubridate wday: 1=Sunday .. 7=Saturday
   
-  data %>%
+  data |> 
     mutate(
       .ts_amsterdam = with_tz(as.POSIXct(!!ts_col, tz = tz), tz = tz),
       bc_day_label = day_map[wday(.ts_amsterdam)],
       bc_week_of_month = 1L + (day(.ts_amsterdam) - 1L) %/% 7L,
       bc_hour_start = hour(.ts_amsterdam),
+      slot_key = paste0(bc_day_label, str_pad(bc_hour_start, width = 2, side = "left", pad = "0")),
       .ts_amsterdam = NULL
     )
 }
@@ -41,14 +42,12 @@ logfmt_ts <- function(x) {
   format(x, "%Y-%m-%d %H:%M:%S %Z")
 }
 
-# Infer the bi-weekly cycle (A or B) for the current CZ-broadcast week (Thu-Thu).
-# 'x' is expected to be Thursday-start-of-week
+# Infer the bi-weekly cycle (A or B) 
+# 'start_of_week' is expected to be Thursday 13:00
 week_label <- function(start_of_week) {
-  mondays <- 1L
-  wd_start_of_week <- wday(start_of_week, week_start = mondays)
-  ref_date_B_cycle <- ymd("2019-10-17")
+  ref_date_B_cycle <- ymd_hms("2019-10-17 13:00:00", tz = "Europe/Amsterdam", quiet = TRUE)
   n_weeks <- as.integer(start_of_week - ref_date_B_cycle) %/% 7
-  if (n_weeks %% 2 == 0) "B" else "A"
+  if_else(n_weeks %% 2 == 0, "B", "A")
 }
 
 start_of_cz_week <- function(pm_cpnm_db) {
@@ -150,10 +149,14 @@ cpnm_epi_bc_ins <- function(pm_pgm_id,
                             pm_bc_start,
                             pm_bc_minutes,
                             pm_job_id,
+                            pm_epi_chain,
+                            pm_epi_step,
                             pm_cpnm_db) {
+  
   sql_stmt <- glue_sql("select title, slug from entries where id = {pm_pgm_id};", .con = pm_cpnm_db)
   df_cur_pgm <- dbGetQuery(pm_cpnm_db, sql_stmt)
   
+  # add episode
   new_id_epi <- UUIDgenerate(use.time = FALSE)  # v4
   bc_seconds <- 60 * pm_bc_minutes
   sql_stmt <- glue_sql("
@@ -162,7 +165,6 @@ cpnm_epi_bc_ins <- function(pm_pgm_id,
                            title,
                            slug,
                            description,
-                           attributes,
                            duration,
                            parent_id,
                            image_id,
@@ -175,7 +177,6 @@ cpnm_epi_bc_ins <- function(pm_pgm_id,
               cast({df_cur_pgm$slug} as json),               -- slug
               JSON_OBJECT('nl', {pm_descr_NL},               -- description
                           'en', {pm_descr_EN}),       
-              JSON_OBJECT('clockfactory_job', {pm_job_id}),  -- attributes
               {bc_seconds},                                  -- duration
               {pm_pgm_id},                                   -- parent_id
               {pm_img_id},                                   -- image_id
@@ -185,6 +186,14 @@ cpnm_epi_bc_ins <- function(pm_pgm_id,
       );", .con = pm_cpnm_db)
   sql_res <- dbExecute(pm_cpnm_db, sql_stmt)
   
+  # add episode to its chain
+  aci <- append_chain_item(pm_con = pm_cpnm_db,
+                           pm_label = pm_epi_chain,
+                           pm_episode_entry_id = new_id_epi,
+                           pm_step_completed_last = pm_epi_step,
+                           pm_clockfactory_job = pm_job_id)
+  
+  # add broadcast
   new_id_bc <- UUIDgenerate(use.time = FALSE)  # v4
   fmt_start_ts = fmt_ts(pm_bc_start)
   fmt_stop_ts = fmt_ts(pm_bc_start + minutes(pm_bc_minutes))
@@ -194,7 +203,6 @@ cpnm_epi_bc_ins <- function(pm_pgm_id,
                            title,
                            slug,
                            dates,
-                           attributes,
                            duration,
                            parent_id,
                            site_id,
@@ -206,7 +214,6 @@ cpnm_epi_bc_ins <- function(pm_pgm_id,
               cast({df_cur_pgm$slug} as json),                    -- slug
               JSON_OBJECT('start', {fmt_start_ts},                -- dates
                           'end', {fmt_stop_ts}),                   
-              JSON_OBJECT('clockfactory_job', {pm_job_id}),       -- attributes
               {bc_seconds},                                       -- duration
               {new_id_epi},                                       -- parent_id
               {pm_site_id},                                       -- site_id
@@ -238,7 +245,6 @@ cpnm_bc_ins <- function(pm_pgm_id,
                            title,
                            slug,
                            dates,
-                           attributes,
                            duration,
                            parent_id,
                            site_id,
@@ -250,7 +256,6 @@ cpnm_bc_ins <- function(pm_pgm_id,
               cast({df_cur_pgm$slug} as json),                  -- slug
               JSON_OBJECT('start', {fmt_start_ts},              -- dates
                           'end', {fmt_stop_ts}),                 
-              JSON_OBJECT('clockfactory_job', {pm_job_id}),     -- attributes
               {bc_seconds},                                     -- duration
               {pm_epi_id},                                      -- parent_id
               {pm_site_id},                                     -- site_id
@@ -363,7 +368,7 @@ cpnm_img_get <- function(pm_img_id, pm_cpnm_db) {
 #   sql_res$pgm_id == pm_pgm_id
 # }
 
-clock2db <- function(pm_clock_tib, pm_job_id, pm_db) {
+clock2db <- function(pm_clock_tib, pm_job_id, pm_epi_step, pm_db) {
   
   # - some programs have 2 main genres, so have 2 records; treat them separately: 'a' for all columns,
   #   and 'b' just for the extra genre
@@ -372,8 +377,6 @@ clock2db <- function(pm_clock_tib, pm_job_id, pm_db) {
   cur_clock_b <- cur_clock |> filter(sch_item == 2L)
   
   for (rn in seq_len(nrow(cur_clock_a))) {
-    # temp exception
-    # if (rn %in% c(1, 2)) next
     
     if (!cur_clock_a$is_rp[rn]) {
       # . fresh episode & broadcast ----
@@ -385,6 +388,8 @@ clock2db <- function(pm_clock_tib, pm_job_id, pm_db) {
                                       pm_bc_start = cur_clock_a$bc_ts[rn],
                                       pm_bc_minutes = cur_clock_a$slot_minutes[rn],
                                       pm_job_id,
+                                      pm_epi_chain = cur_clock_a$episode_chain[rn],
+                                      pm_epi_step,
                                       pm_cpnm_db = pm_db)
       # . genre ----
       # - add an `episode` taxonomable record for first genre
@@ -402,7 +407,7 @@ clock2db <- function(pm_clock_tib, pm_job_id, pm_db) {
                                 pm_order = 2L,
                                 pm_cpnm_db = pm_db)
       }
-      
+
       # . editor ----
       # - add an `episode` taxonomable record for editors and production-role (txy-type colofon)
       txb_res <- cpnm_txb_edi_ins(pm_epi_id = fresh_epi_bc,
@@ -459,3 +464,92 @@ epi_replays <- function(pm_pgm_id, pm_genre, pm_max_ts, pm_cpnm_db) {
      ORDER BY bc_start DESC
      limit 1;", .con = pm_cpnm_db)
 }
+
+derive_clock_key <- function(slot_ts) {
+  slot_week <- 1 + floor((day(slot_ts - 1) / 7))
+  wday_nr <- wday(slot_ts, week_start = 1)
+  day_abbr <- c("ma", "di", "wo", "do", "vr", "za", "zo")
+  slot_weekday <- day_abbr[wday_nr]
+  slot_hour <- hour(slot_ts)
+  paste0(slot_weekday, str_pad(slot_hour, width = 2, side = "left", pad = "0"), "-", slot_week)
+}
+
+append_chain_item <- function(pm_con,
+                              pm_label,
+                              pm_step_completed_last,
+                              pm_episode_entry_id,
+                              pm_clockfactory_job = NULL) {
+  dbWithTransaction(pm_con, {
+    chain_row <- dbGetQuery(
+      pm_con,
+      "
+      SELECT chain_id, next_position
+      FROM episode_chain
+      WHERE label = ?
+      FOR UPDATE
+      ",
+      params = list(pm_label)
+    )
+    
+    if (nrow(chain_row) == 0) {
+      dbExecute(
+        pm_con,
+        "
+        UPDATE episode_chain_seq
+        SET id = LAST_INSERT_ID(id + 1)
+        "
+      )
+      
+      chain_id <- dbGetQuery(
+        pm_con,
+        "SELECT LAST_INSERT_ID() AS chain_id"
+      )$chain_id[[1]]
+      
+      position <- 1L
+      
+      dbExecute(
+        pm_con,
+        "
+        INSERT INTO episode_chain (chain_id, label, next_position)
+        VALUES (?, ?, 2)
+        ",
+        params = list(chain_id, pm_label)
+      )
+    } else {
+      chain_id <- chain_row$chain_id[[1]]
+      position <- chain_row$next_position[[1]]
+      
+      dbExecute(
+        pm_con,
+        "
+        UPDATE episode_chain
+        SET next_position = next_position + 1
+        WHERE chain_id = ?
+        ",
+        params = list(chain_id)
+      )
+    }
+    
+    dbExecute(
+      pm_con,
+      "
+      INSERT INTO episode_chain_item
+        (chain_id, position, step_completed_last, episode_entry_id, clockfactory_job)
+      VALUES (?, ?, ?, ?, ?)
+      ",
+      params = list(
+        chain_id,
+        position,
+        pm_step_completed_last,
+        pm_episode_entry_id,
+        pm_clockfactory_job
+      )
+    )
+    
+    tibble(
+      chain_id = chain_id,
+      position = position
+    )
+  })
+}
+

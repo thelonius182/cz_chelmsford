@@ -7,7 +7,7 @@ ins_result <-
                pm_cpnm_db = con)
 
 # insert editor ----
-cpnm_edi_ins(pm_name_NL = 'Hans Mantel en Rembrandt Frerichs',
+cpnm_edi_ins(pm_name_NL = 'Alexander Kraft van Ermel',
                 pm_cpnm_db = con)
 
 # CZ: append missing colofons ----
