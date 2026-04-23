@@ -148,9 +148,9 @@ cpnm_epi_bc_ins <- function(pm_pgm_id,
                             pm_site_id,
                             pm_bc_start,
                             pm_bc_minutes,
-                            pm_job_id,
-                            pm_epi_chain,
-                            pm_epi_step,
+                            # pm_job_id,
+                            # pm_epi_chain,
+                            # pm_epi_step,
                             pm_cpnm_db) {
   
   sql_stmt <- glue_sql("select title, slug from entries where id = {pm_pgm_id};", .con = pm_cpnm_db)
@@ -187,11 +187,11 @@ cpnm_epi_bc_ins <- function(pm_pgm_id,
   sql_res <- dbExecute(pm_cpnm_db, sql_stmt)
   
   # add episode to its chain
-  aci <- append_chain_item(pm_con = pm_cpnm_db,
-                           pm_label = pm_epi_chain,
-                           pm_episode_entry_id = new_id_epi,
-                           pm_step_completed_last = pm_epi_step,
-                           pm_clockfactory_job = pm_job_id)
+  # aci <- append_chain_item(pm_con = pm_cpnm_db,
+  #                          pm_label = pm_epi_chain,
+  #                          pm_episode_entry_id = new_id_epi,
+  #                          pm_step_completed_last = pm_epi_step,
+  #                          pm_clockfactory_job = pm_job_id)
   
   # add broadcast
   new_id_bc <- UUIDgenerate(use.time = FALSE)  # v4
@@ -230,7 +230,6 @@ cpnm_bc_ins <- function(pm_pgm_id,
                         pm_site_id,
                         pm_bc_start,
                         pm_bc_minutes,
-                        pm_job_id,
                         pm_cpnm_db) {
   sql_stmt <- glue_sql("select title, slug from entries where id = {pm_pgm_id};", .con = pm_cpnm_db)
   df_cur_pgm <- dbGetQuery(pm_cpnm_db, sql_stmt)
@@ -368,13 +367,13 @@ cpnm_img_get <- function(pm_img_id, pm_cpnm_db) {
 #   sql_res$pgm_id == pm_pgm_id
 # }
 
-clock2db <- function(pm_clock_tib, pm_job_id, pm_epi_step, pm_db) {
+clock2db <- function(pm_clock_tib, pm_db) {
   
   # - some programs have 2 main genres, so have 2 records; treat them separately: 'a' for all columns,
   #   and 'b' just for the extra genre
-  cur_clock <- pm_clock_tib |> group_by(bc_ts) |> mutate(sch_item = row_number()) |> ungroup()
-  cur_clock_a <- cur_clock |> filter(sch_item == 1L)
-  cur_clock_b <- cur_clock |> filter(sch_item == 2L)
+  cur_clock <- pm_clock_tib |> group_by(slot) |> mutate(tib_item = row_number()) |> ungroup()
+  cur_clock_a <- cur_clock |> filter(tib_item == 1L)
+  cur_clock_b <- cur_clock |> filter(tib_item == 2L)
   
   for (rn in seq_len(nrow(cur_clock_a))) {
     
@@ -385,11 +384,11 @@ clock2db <- function(pm_clock_tib, pm_job_id, pm_epi_step, pm_db) {
                                       pm_descr_EN = cur_clock_a$intro_EN[rn],
                                       pm_img_id = cur_clock_a$image_id[rn],
                                       pm_site_id = 1L,
-                                      pm_bc_start = cur_clock_a$bc_ts[rn],
+                                      pm_bc_start = cur_clock_a$slot[rn],
                                       pm_bc_minutes = cur_clock_a$slot_minutes[rn],
-                                      pm_job_id,
-                                      pm_epi_chain = cur_clock_a$episode_chain[rn],
-                                      pm_epi_step,
+                                      # pm_job_id,
+                                      # pm_epi_chain = cur_clock_a$episode_chain[rn],
+                                      # pm_epi_step,
                                       pm_cpnm_db = pm_db)
       # . genre ----
       # - add an `episode` taxonomable record for first genre
@@ -399,7 +398,7 @@ clock2db <- function(pm_clock_tib, pm_job_id, pm_epi_step, pm_db) {
                               pm_cpnm_db = pm_db)
       
       # - add an `episode` taxonomable record for second genre
-      df_g2 <- cur_clock_b |> filter(bc_ts == cur_clock_a$bc_ts[rn])
+      df_g2 <- cur_clock_b |> filter(slot == cur_clock_a$slot[rn])
       
       if (nrow(df_g2) == 1) {
         txb_res <- cpnm_txb_ins(pm_epi_id = fresh_epi_bc,
@@ -419,7 +418,7 @@ clock2db <- function(pm_clock_tib, pm_job_id, pm_epi_step, pm_db) {
       bc_replay_res <- cpnm_bc_ins(pm_pgm_id = cur_clock_a$pgm_id[rn],
                                    pm_epi_id = cur_clock_a$replay_of_epi_id[rn],
                                    pm_site_id = 1L,
-                                   pm_bc_start = cur_clock_a$bc_ts[rn],
+                                   pm_bc_start = cur_clock_a$slot[rn],
                                    pm_bc_minutes = cur_clock_a$slot_minutes[rn],
                                    pm_cpnm_db = pm_db)
     }
