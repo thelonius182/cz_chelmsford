@@ -42,6 +42,8 @@ repeat {
   flog.info(str_glue("Week: Thursday {logfmt_ts(start_ts)} to Thursday {logfmt_ts(stop_ts)}"), name = "clof")
   
   # clockprofile from GD ----
+  # . trigger GD-auth
+  drive_auth(cache = ".secrets", email = "cz.teamservice@gmail.com")
   path_clockprofile_cz <- "/home/lon/R_projects/cz_chelmsford/resources/modelklok_cz.xlsx"
   drive_download(file = cz_get_url("modelklok_cz"), overwrite = T, path = path_clockprofile_cz)
   
@@ -246,31 +248,32 @@ repeat {
   }
   
   # build clock history ----
-  fmt_start_ts = fmt_ts(start_ts)
-  qry <- "
+  fmt_start_ts_m10 = fmt_ts(start_ts - minutes(10L))
+  fmt_stop_ts_m10 = fmt_ts(stop_ts - minutes(10L))
+  qry <- glue_sql("
          with ds1 as (
             select ec.label, ci.episode_entry_id, e.content, min(b.dates->>'$.start') as bc_start
-                  from episode_chain_item ci 
-                     join episode_chain ec on ec.chain_id = ci.chain_id
-                     join entries e on e.id = ci.episode_entry_id
-                                   and e.deleted_at is null  
-                                   and e.type = 'episode'
-                                   and e.site_id = 1
-                     join entries b on b.parent_id = e.id
-                                   and b.deleted_at is null
-                                   and b.type = 'broadcast'
-                                   and b.site_id = 1
+            from episode_chain_item ci 
+               join episode_chain ec on ec.chain_id = ci.chain_id
+               join entries e on e.id = ci.episode_entry_id
+                             and e.deleted_at is null  
+                             and e.type = 'episode'
+                             and e.site_id = 1
+               join entries b on b.parent_id = e.id
+                             and b.deleted_at is null
+                             and b.type = 'broadcast'
+                             and b.site_id = 1
             group by ec.label, ci.episode_entry_id, e.content
          )
          select bc_start, 
                 label, 
-                case when bc_start < now() then 'PLAYOUT'
+                case when bc_start < {fmt_start_ts_m10} then 'PLAYOUT'
                      when content is null then 'FACTORY'
                      when content->>'$.nl' = 'null' then 'FACTORY'
                      else 'EDITOR' end as episode_status,
                 episode_entry_id
-         from ds1 where bc_start >= '2025-08-28 13:00:00'
-         order by 1;"
+         from ds1 where bc_start between '2025-10-02 13:00:00' and {fmt_stop_ts_m10}
+         order by 1;", .con = con)
   db_clock_history <- dbGetQuery(con, qry)
   
   df_clock_history <- db_clock_history |> mutate(bc_start = ymd_hms(bc_start, tz = "Europe/Amsterdam", quiet = T))
@@ -280,25 +283,40 @@ repeat {
     left_join(df_clockcatalogue, by = join_by(episode_chain)) |> select(-`dummy-1`, -slug, -genre_1, -genre_2)
   
   # merge cur/his-clocks ----
-  cur_job_id <- UUIDgenerate(use.time = FALSE) 
-  
   df_clock_cz <- df_clock_cz_cur.4 |> bind_rows(df_clock_cz_his) |> arrange(slot, episode_status) |> 
     group_by(slot) |> mutate(rn = row_number()) |> ungroup() |> 
     select(1:5, is_replay, rn, episode_entry_id, episode_status, episode_chain, everything()) |> filter(rn == 1L) |> 
     select(-rn) |> 
-    mutate(is_replay = if_else(!is.na(episode_entry_id), FALSE, is_replay),
-           job_id = cur_job_id)
+    mutate(is_replay = if_else(!is.na(episode_entry_id), FALSE, is_replay))
   
+  # > add new to database ----
+  # do new ones first, to make sure that episodes replaying early, so this week, can be found in this week
   df_new_episodes_fresh <- df_clock_cz |> filter(!is_replay & is.na(episode_entry_id))
-  flog.info(str_glue("adding clock_fresh to database, job = {cur_job_id}"), name = "clof")
-  func_result <- clock2db(pm_clock_tib = df_new_episodes_fresh, pm_db = con)
+  ts_now = now()
+  # show prepped value the way the database stores it: with timezone UTC
+  fmt_created_at = format(ts_now, tz = "UTC", usetz = FALSE)
+  flog.info(str_glue("adding fresh clock items to database, using `created_at` = {fmt_created_at} (UTC, as in database)"), 
+            name = "clof")
+  # insert everything with identical `created_at` timestamp, making them easy to spot later
+  func_result <- clock2db(pm_clock_tib = df_new_episodes_fresh, pm_created_at = ts_now, pm_db = con)
 
-  # > Add fresh episodes to DB ----
-  # fresh first, so replays within the current week can find them
-  df_clock_cz.12 <- df_clock_cz.11 |> filter(!is_rp)
-  job_id <- UUIDgenerate(use.time = FALSE) 
-  flog.info(str_glue("adding clock to database, job = {job_id}"), name = "clof")
-  func_result <- clock2db(pm_clock_tib = df_clock_cz.11, pm_job_id = job_id, pm_epi_step = STEP$FACTORY, pm_db = con)
+  # . update clock tibble rows ----
+  # test: fmt_created_at <- "2026-04-24 18:42:00"
+  qry <- glue_sql(
+    "select cast(b.dates->>'$.start' as datetime) as slot,
+       e.id as episode_entry_id,
+       'FACTORY' as episode_status
+     from entries b join entries e on e.id = b.parent_id
+                                  and e.deleted_at is null
+                                  and e.type = 'episode'
+     where b.deleted_at is null
+       and b.type = 'broadcast'
+       and b.site_id = 1
+       and b.created_at = {fmt_created_at}
+     order by 1;", .con = con)
+  db_new_items <- dbGetQuery(con, qry) |> mutate(slot = force_tz(slot, tzone = tz_am))
+  df_clock_cz.1 <- df_clock_cz |> rows_update(db_new_items, by = "slot")
+  write_rds(x = df_clock_cz.1, file = "resources/df_clock_cz_1.RDS")
   
   # . check bc-count ----
   n_bcs_expected <- df_clock_cz.11 |> select(bc_ts) |> distinct() |> nrow()

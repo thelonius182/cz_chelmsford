@@ -148,9 +148,7 @@ cpnm_epi_bc_ins <- function(pm_pgm_id,
                             pm_site_id,
                             pm_bc_start,
                             pm_bc_minutes,
-                            # pm_job_id,
-                            # pm_epi_chain,
-                            # pm_epi_step,
+                            pm_created_at,
                             pm_cpnm_db) {
   
   sql_stmt <- glue_sql("select title, slug from entries where id = {pm_pgm_id};", .con = pm_cpnm_db)
@@ -159,6 +157,7 @@ cpnm_epi_bc_ins <- function(pm_pgm_id,
   # add episode
   new_id_epi <- UUIDgenerate(use.time = FALSE)  # v4
   bc_seconds <- 60 * pm_bc_minutes
+  pm_now <- format(pm_created_at, tz = "UTC", usetz = FALSE)
   sql_stmt <- glue_sql("
       INSERT INTO entries (id,
                            type,
@@ -182,7 +181,7 @@ cpnm_epi_bc_ins <- function(pm_pgm_id,
               {pm_img_id},                                   -- image_id
               {pm_site_id},                                  -- site_id
               5,                                             -- user_id admin/LvdA
-              NOW()                                          -- created_at
+              {pm_now}                                       -- created_at
       );", .con = pm_cpnm_db)
   sql_res <- dbExecute(pm_cpnm_db, sql_stmt)
   
@@ -218,7 +217,7 @@ cpnm_epi_bc_ins <- function(pm_pgm_id,
               {new_id_epi},                                       -- parent_id
               {pm_site_id},                                       -- site_id
               5,                                                  -- user_id admin/LvdA
-              NOW()                                               -- created_at
+              {pm_now}                                            -- created_at
       );", .con = pm_cpnm_db)
   sql_res <- dbExecute(pm_cpnm_db, sql_stmt)
   
@@ -230,6 +229,7 @@ cpnm_bc_ins <- function(pm_pgm_id,
                         pm_site_id,
                         pm_bc_start,
                         pm_bc_minutes,
+                        pm_created_at,
                         pm_cpnm_db) {
   sql_stmt <- glue_sql("select title, slug from entries where id = {pm_pgm_id};", .con = pm_cpnm_db)
   df_cur_pgm <- dbGetQuery(pm_cpnm_db, sql_stmt)
@@ -238,6 +238,7 @@ cpnm_bc_ins <- function(pm_pgm_id,
   new_id_bc <- UUIDgenerate(use.time = FALSE)  # v4
   fmt_start_ts = fmt_ts(pm_bc_start)
   fmt_stop_ts = fmt_ts(pm_bc_start + minutes(pm_bc_minutes))
+  pm_now <- format(pm_created_at, tz = "UTC", usetz = FALSE)
   sql_stmt <- glue_sql("
       INSERT INTO entries (id,
                            type,
@@ -259,7 +260,7 @@ cpnm_bc_ins <- function(pm_pgm_id,
               {pm_epi_id},                                      -- parent_id
               {pm_site_id},                                     -- site_id
               5,                                                -- user_id admin/LvdA
-              NOW()                                             -- created_at
+              {pm_now}                                          -- created_at
       );", .con = pm_cpnm_db)
   sql_res <- dbExecute(pm_cpnm_db, sql_stmt)
 }
@@ -367,7 +368,7 @@ cpnm_img_get <- function(pm_img_id, pm_cpnm_db) {
 #   sql_res$pgm_id == pm_pgm_id
 # }
 
-clock2db <- function(pm_clock_tib, pm_db) {
+clock2db <- function(pm_clock_tib, pm_created_at, pm_db) {
   
   # - some programs have 2 main genres, so have 2 records; treat them separately: 'a' for all columns,
   #   and 'b' just for the extra genre
@@ -377,7 +378,7 @@ clock2db <- function(pm_clock_tib, pm_db) {
   
   for (rn in seq_len(nrow(cur_clock_a))) {
     
-    if (!cur_clock_a$is_rp[rn]) {
+    if (!cur_clock_a$is_replay[rn]) {
       # . fresh episode & broadcast ----
       fresh_epi_bc <- cpnm_epi_bc_ins(pm_pgm_id = cur_clock_a$pgm_id[rn],
                                       pm_descr_NL = cur_clock_a$intro_NL[rn],
@@ -386,9 +387,7 @@ clock2db <- function(pm_clock_tib, pm_db) {
                                       pm_site_id = 1L,
                                       pm_bc_start = cur_clock_a$slot[rn],
                                       pm_bc_minutes = cur_clock_a$slot_minutes[rn],
-                                      # pm_job_id,
-                                      # pm_epi_chain = cur_clock_a$episode_chain[rn],
-                                      # pm_epi_step,
+                                      pm_created_at,
                                       pm_cpnm_db = pm_db)
       # . genre ----
       # - add an `episode` taxonomable record for first genre
@@ -420,6 +419,7 @@ clock2db <- function(pm_clock_tib, pm_db) {
                                    pm_site_id = 1L,
                                    pm_bc_start = cur_clock_a$slot[rn],
                                    pm_bc_minutes = cur_clock_a$slot_minutes[rn],
+                                   pm_created_at,
                                    pm_cpnm_db = pm_db)
     }
   }
