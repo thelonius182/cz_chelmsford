@@ -67,18 +67,18 @@ start_of_cz_week <- function(pm_cpnm_db) {
   dbGetQuery(pm_cpnm_db, sql_stmt)
 }
 
-locked_slots <- function(pm_start, pm_stop, pm_db) {
-  fmt_start_ts = fmt_ts(pm_start)
-  fmt_stop_ts = fmt_ts(pm_stop)
+locked_slots <- function(pm_start, pm_stop, pm_site, pm_db) {
+  fmt_start_ts = fmt_ts(pm_start - minutes(10L))
+  fmt_stop_ts = fmt_ts(pm_stop - minutes(10L))
   sql_stmt <- glue_sql(
   "select dates->>'$.start' as locked_slot
    from entries
    where type = 'broadcast'
-     and site_id in (1, 2)
+     and site_id = {pm_site}
      and deleted_at is null
      and dates->>'$.start' between {fmt_start_ts} and {fmt_stop_ts};", 
   .con = pm_db)
-  sql_res <- dbGetQuery(pm_db, sql_stmt)
+  dbGetQuery(pm_db, sql_stmt)
 }
 
 cpnm_edi_ins <- function(pm_name_NL, pm_cpnm_db) {
@@ -378,50 +378,39 @@ clock2db <- function(pm_clock_tib, pm_created_at, pm_site, pm_db) {
   
   for (rn in seq_len(nrow(cur_clock_a))) {
     
-    if (!cur_clock_a$is_replay[rn]) {
-      # . fresh episode & broadcast ----
-      fresh_epi_bc <- cpnm_epi_bc_ins(pm_pgm_id = cur_clock_a$pgm_id[rn],
-                                      pm_descr_NL = cur_clock_a$intro_NL[rn],
-                                      pm_descr_EN = cur_clock_a$intro_EN[rn],
-                                      pm_img_id = cur_clock_a$image_id[rn],
-                                      pm_site_id = pm_site,
-                                      pm_bc_start = cur_clock_a$slot[rn],
-                                      pm_bc_minutes = cur_clock_a$slot_minutes[rn],
-                                      pm_created_at,
-                                      pm_cpnm_db = pm_db)
-      # . genre ----
-      # - add an `episode` taxonomable record for first genre
+    # . fresh episode & broadcast ----
+    fresh_epi_bc <- cpnm_epi_bc_ins(pm_pgm_id = cur_clock_a$pgm_id[rn],
+                                    pm_descr_NL = cur_clock_a$intro_NL[rn],
+                                    pm_descr_EN = cur_clock_a$intro_EN[rn],
+                                    pm_img_id = cur_clock_a$image_id[rn],
+                                    pm_site_id = pm_site,
+                                    pm_bc_start = cur_clock_a$slot[rn],
+                                    pm_bc_minutes = cur_clock_a$slot_minutes[rn],
+                                    pm_created_at,
+                                    pm_cpnm_db = pm_db)
+    # . genre ----
+    # - add an `episode` taxonomable record for first genre
+    txb_res <- cpnm_txb_ins(pm_epi_id = fresh_epi_bc,
+                            pm_txy_id = cur_clock_a$ty_genre_id[rn],
+                            pm_order = 1L,
+                            pm_cpnm_db = pm_db)
+    
+    # - add an `episode` taxonomable record for second genre
+    df_g2 <- cur_clock_b |> filter(slot == cur_clock_a$slot[rn])
+    
+    if (nrow(df_g2) == 1) {
       txb_res <- cpnm_txb_ins(pm_epi_id = fresh_epi_bc,
-                              pm_txy_id = cur_clock_a$ty_genre_id[rn],
-                              pm_order = 1L,
+                              pm_txy_id = df_g2$ty_genre_id,
+                              pm_order = 2L,
                               pm_cpnm_db = pm_db)
-      
-      # - add an `episode` taxonomable record for second genre
-      df_g2 <- cur_clock_b |> filter(slot == cur_clock_a$slot[rn])
-      
-      if (nrow(df_g2) == 1) {
-        txb_res <- cpnm_txb_ins(pm_epi_id = fresh_epi_bc,
-                                pm_txy_id = df_g2$ty_genre_id,
-                                pm_order = 2L,
-                                pm_cpnm_db = pm_db)
-      }
-
-      # . editor ----
-      # - add an `episode` taxonomable record for editors and production-role (txy-type colofon)
-      txb_res <- cpnm_txb_edi_ins(pm_epi_id = fresh_epi_bc,
-                                  pm_txy_id = cur_clock_a$ty_editor_id[rn],
-                                  pm_role_NL = cur_clock_a$productie[rn],
-                                  pm_cpnm_db = pm_db)
-    } else {
-      # . replay ----
-      bc_replay_res <- cpnm_bc_ins(pm_pgm_id = cur_clock_a$pgm_id[rn],
-                                   pm_epi_id = cur_clock_a$replay_of_epi_id[rn],
-                                   pm_site_id = pm_site,
-                                   pm_bc_start = cur_clock_a$slot[rn],
-                                   pm_bc_minutes = cur_clock_a$slot_minutes[rn],
-                                   pm_created_at,
-                                   pm_cpnm_db = pm_db)
     }
+    
+    # . editor ----
+    # - add an `episode` taxonomable record for editors and production-role (txy-type colofon)
+    txb_res <- cpnm_txb_edi_ins(pm_epi_id = fresh_epi_bc,
+                                pm_txy_id = cur_clock_a$ty_editor_id[rn],
+                                pm_role_NL = cur_clock_a$productie[rn],
+                                pm_cpnm_db = pm_db)
   }
 }
 
@@ -554,5 +543,11 @@ append_chain_item <- function(pm_con,
 
 lookup_replay <- function(pm_chains, pm_cur_chain, pm_replay_slot, pm_offset) {
   replay_candidates <- pm_chains |> filter(episode_chain == pm_cur_chain & slot < pm_replay_slot)
-  replay_candidates$episode_entry_id[pm_offset + 1L]
+  replay_candidates$episode_entry_id[pm_offset + 1L] %||% "BLANK"
+}
+
+log_tibble <- function(x, label = deparse(substitute(x)), n = 20, width = 160) {
+  x_tbl <- as_tibble(x)
+  txt <- capture.output(print(x_tbl, n = n, width = width))
+  flog.info("%s:\n%s", label, paste(txt, collapse = "\n"), name = "clof")
 }
