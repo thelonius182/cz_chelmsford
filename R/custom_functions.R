@@ -368,9 +368,9 @@ cpnm_img_get <- function(pm_img_id, pm_cpnm_db) {
 #   sql_res$pgm_id == pm_pgm_id
 # }
 
-clock2db <- function(pm_clock_tib, pm_created_at, pm_db) {
+clock2db <- function(pm_clock_tib, pm_created_at, pm_site, pm_db) {
   
-  # - some programs have 2 main genres, so have 2 records; treat them separately: 'a' for all columns,
+  # - some fresh programs have 2 main genres, so have 2 records; treat them separately: 'a' for all columns,
   #   and 'b' just for the extra genre
   cur_clock <- pm_clock_tib |> group_by(slot) |> mutate(tib_item = row_number()) |> ungroup()
   cur_clock_a <- cur_clock |> filter(tib_item == 1L)
@@ -384,7 +384,7 @@ clock2db <- function(pm_clock_tib, pm_created_at, pm_db) {
                                       pm_descr_NL = cur_clock_a$intro_NL[rn],
                                       pm_descr_EN = cur_clock_a$intro_EN[rn],
                                       pm_img_id = cur_clock_a$image_id[rn],
-                                      pm_site_id = 1L,
+                                      pm_site_id = pm_site,
                                       pm_bc_start = cur_clock_a$slot[rn],
                                       pm_bc_minutes = cur_clock_a$slot_minutes[rn],
                                       pm_created_at,
@@ -416,7 +416,7 @@ clock2db <- function(pm_clock_tib, pm_created_at, pm_db) {
       # . replay ----
       bc_replay_res <- cpnm_bc_ins(pm_pgm_id = cur_clock_a$pgm_id[rn],
                                    pm_epi_id = cur_clock_a$replay_of_epi_id[rn],
-                                   pm_site_id = 1L,
+                                   pm_site_id = pm_site,
                                    pm_bc_start = cur_clock_a$slot[rn],
                                    pm_bc_minutes = cur_clock_a$slot_minutes[rn],
                                    pm_created_at,
@@ -552,3 +552,7 @@ append_chain_item <- function(pm_con,
   })
 }
 
+lookup_replay <- function(pm_chains, pm_cur_chain, pm_replay_slot, pm_offset) {
+  replay_candidates <- pm_chains |> filter(episode_chain == pm_cur_chain & slot < pm_replay_slot)
+  replay_candidates$episode_entry_id[pm_offset + 1L]
+}

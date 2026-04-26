@@ -252,7 +252,11 @@ repeat {
   fmt_stop_ts_m10 = fmt_ts(stop_ts - minutes(10L))
   qry <- glue_sql("
          with ds1 as (
-            select ec.label, ci.episode_entry_id, e.content, min(b.dates->>'$.start') as bc_start
+            select ec.label, 
+                   ci.episode_entry_id, 
+                   e.content, 
+                   min(b.dates->>'$.start') as bc_start,
+                   min(b.dates->>'$.end') as bc_stop
             from episode_chain_item ci 
                join episode_chain ec on ec.chain_id = ci.chain_id
                join entries e on e.id = ci.episode_entry_id
@@ -266,6 +270,7 @@ repeat {
             group by ec.label, ci.episode_entry_id, e.content
          )
          select bc_start, 
+                bc_stop,
                 label, 
                 case when bc_start < {fmt_start_ts_m10} then 'PLAYOUT'
                      when content is null then 'FACTORY'
@@ -276,10 +281,13 @@ repeat {
          order by 1;", .con = con)
   db_clock_history <- dbGetQuery(con, qry)
   
-  df_clock_history <- db_clock_history |> mutate(bc_start = ymd_hms(bc_start, tz = "Europe/Amsterdam", quiet = T))
+  df_clock_history <- db_clock_history |> mutate(bc_start = ymd_hms(bc_start, tz = "Europe/Amsterdam", quiet = T),
+                                                 bc_stop = ymd_hm(bc_stop, tz = "Europe/Amsterdam", quiet = T),
+                                                 bc_minutes = int_length(int = interval(start = bc_start, end = bc_stop)) / 60L)
   
   df_clock_cz_his <- add_bc_cols(df_clock_history, bc_start) |> 
-    select(slot = bc_start, slot_key, block = bc_week_of_month, episode_chain = label, episode_entry_id, episode_status) |> 
+    select(slot = bc_start, slot_key, block = bc_week_of_month, slot_minutes = bc_minutes,
+           episode_chain = label, episode_entry_id, episode_status) |> 
     left_join(df_clockcatalogue, by = join_by(episode_chain)) |> select(-`dummy-1`, -slug, -genre_1, -genre_2)
   
   # merge cur/his-clocks ----
@@ -297,8 +305,8 @@ repeat {
   fmt_created_at = format(ts_now, tz = "UTC", usetz = FALSE)
   flog.info(str_glue("adding fresh clock items to database, using `created_at` = {fmt_created_at} (UTC, as in database)"), 
             name = "clof")
-  # insert everything with identical `created_at` timestamp, making them easy to spot later
-  func_result <- clock2db(pm_clock_tib = df_new_episodes_fresh, pm_created_at = ts_now, pm_db = con)
+  # insert everything with identical `created_at` timestamps, making it a set
+  func_result <- clock2db(pm_clock_tib = df_new_episodes_fresh, pm_created_at = ts_now, pm_site = SITE$CONCERTZENDER, pm_db = con)
 
   # . update clock tibble rows ----
   # test: fmt_created_at <- "2026-04-24 18:42:00"
@@ -317,6 +325,33 @@ repeat {
   db_new_items <- dbGetQuery(con, qry) |> mutate(slot = force_tz(slot, tzone = tz_am))
   df_clock_cz.1 <- df_clock_cz |> rows_update(db_new_items, by = "slot")
   write_rds(x = df_clock_cz.1, file = "resources/df_clock_cz_1.RDS")
+  df_clock_cz.1 <- read_rds("resources/df_clock_cz_1.RDS")
+  
+  # prep episode chains ----
+  df_chains <- df_clock_cz.1 |> filter(!is_replay) |> select(episode_chain, slot, episode_entry_id) |> 
+    arrange(episode_chain, desc(slot)) #  |> 
+    # group_by(episode_chain) |> mutate(chain_pos = row_number()) |> ungroup()
+  
+  # > add replays to database ----
+  df_new_episodes_replay <- df_clock_cz.1 |> filter(is_replay & is.na(episode_entry_id)) |> 
+    mutate(replay_offset = case_when(nipper_mogelijk != "N" ~ 11L,  # NipperStudio replays broadcasts 6 months ago
+                                     uitzendtype == "live"  ~ 1L,   # live broadcasts should replay the second to last
+                                     TRUE                   ~ 0L))  # semi-live broadcasts can replay the last one
+
+  for (rn in seq_len(nrow(df_new_episodes_replay))) {
+    replay_episode_entry_id <- lookup_replay(pm_chains = df_chains,
+                                             pm_cur_chain = df_new_episodes_replay$episode_chain[rn],
+                                             pm_replay_slot = df_new_episodes_replay$slot[rn],
+                                             pm_offset = df_new_episodes_replay$replay_offset[rn])
+  }
+  
+  ts_now = now()
+  # show prepped value the way the database stores it: with timezone UTC
+  fmt_created_at = format(ts_now, tz = "UTC", usetz = FALSE)
+  flog.info(str_glue("adding fresh clock items to database, using `created_at` = {fmt_created_at} (UTC, as in database)"), 
+            name = "clof")
+  # insert everything with identical `created_at` timestamps, making it a set
+  func_result <- clock2db(pm_clock_tib = df_new_episodes_fresh, pm_created_at = ts_now, pm_db = con)
   
   # . check bc-count ----
   n_bcs_expected <- df_clock_cz.11 |> select(bc_ts) |> distinct() |> nrow()
