@@ -464,7 +464,6 @@ derive_clock_key <- function(slot_ts) {
 
 append_chain_item <- function(pm_con,
                               pm_label,
-                              pm_step_completed_last,
                               pm_episode_entry_id,
                               pm_clockfactory_job = NULL) {
   dbWithTransaction(pm_con, {
@@ -522,13 +521,12 @@ append_chain_item <- function(pm_con,
       pm_con,
       "
       INSERT INTO episode_chain_item
-        (chain_id, position, step_completed_last, episode_entry_id, clockfactory_job)
-      VALUES (?, ?, ?, ?, ?)
+        (chain_id, position, episode_entry_id, clockfactory_job)
+      VALUES (?, ?, ?, ?)
       ",
       params = list(
         chain_id,
         position,
-        pm_step_completed_last,
         pm_episode_entry_id,
         pm_clockfactory_job
       )
