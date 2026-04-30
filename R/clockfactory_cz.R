@@ -312,8 +312,8 @@ repeat {
   fmt_created_at = format(ts_now, tz = "UTC", usetz = FALSE)
   
   if (nrow(df_new_episodes_fresh) > 0) {
-    flog.info(str_glue("adding fresh clock items to database, using `created_at` = {fmt_created_at} (UTC, as in database)"), 
-              name = "clof")
+    flog.info(str_glue("adding fresh clock items to database, using `created_at` = {fmt_created_at} UTC"), name = "clof")
+    
     # insert everything with identical `created_at` timestamps, making it a set
     func_result <- clock2db(pm_clock_tib = df_new_episodes_fresh, 
                             pm_created_at = ts_now, 
@@ -359,16 +359,18 @@ repeat {
     ) |> anti_join(df_locked, by = join_by(slot == locked_slot_ts))
   
   if (nrow(df_new_episodes_replay) > 0) {
-    flog.info(str_glue("adding replay clock items to database, using `created_at` = {fmt_created_at} (UTC, as in database)"), 
+    flog.info(str_glue("adding replay clock items to database, using `created_at` = {fmt_created_at} UTC"), 
               name = "clof")
     for (rn in seq_len(nrow(df_new_episodes_replay))) {
       replay_episode_entry_id <- lookup_replay(pm_chains = df_chains,
                                                pm_cur_chain = df_new_episodes_replay$episode_chain[rn],
                                                pm_replay_slot = df_new_episodes_replay$slot[rn],
                                                pm_offset = df_new_episodes_replay$replay_offset[rn])
-      if (replay_episode_entry_id == "BLANK") {
-        flog.info(str_glue("no replay found for {df_new_episodes_replay$titel_EN[rn]}, slot {df_new_episodes_replay$slot[rn]}"), 
-                  name = "clof")
+      if (is.na(replay_episode_entry_id) || replay_episode_entry_id == "BLANK") {
+        v1 <- df_new_episodes_replay$titel_EN[rn]
+        v2 <- df_new_episodes_replay$slot[rn]
+        v3 = df_new_episodes_replay$episode_chain[rn]
+        flog.info(str_glue("no replay found for {v1}, slot {v2}, chain {v3}"), name = "clof")
       } else {
         ins_result <- cpnm_bc_ins(pm_pgm_id = df_new_episodes_replay$pgm_id[rn],
                                   pm_epi_id = replay_episode_entry_id,
