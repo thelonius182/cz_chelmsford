@@ -2,8 +2,8 @@
 # remove all rows from week
 # - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
 
-begin_ts <- force_tz(ymd_hms("2026-04-23 13:00:00", quiet = T), tzone = "Europe/Amsterdam")
-end_ts  <- begin_ts + days(7L) - minutes(1L)
+begin_ts <- force_tz(ymd_hms("2026-04-30 13:00:00", quiet = T), tzone = "Europe/Amsterdam")
+end_ts  <- begin_ts + days(7L) - minutes(10L)
 
 sql_result <- dbExecute(con, "DROP TEMPORARY TABLE IF EXISTS to_delete")
 

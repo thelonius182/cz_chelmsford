@@ -7,6 +7,7 @@ url_chains_cz: 1YnAlYp2JNhsYAx8tCPC5CjoFhxHoapyHpmPEzV-kUlk
 url_lacie: 1d8t8ZItwfBpdVrB9lyc83-F8NysdHRDpgnw-TJ9G2ng
 log_appender_file_cz: /home/lon/Documents/Logs/clockfactory_cz.log
 log_appender_file_wj: /home/lon/Documents/Logs/clockfactory_wj.log
+clock_home: /home/lon/Documents/cpnm-clocks/clock_cz.RDS
 modelrooster_versie: "20250417"
 url_modelklok_cz: 1acLL4dtMvVJWeL9ueVNSA7Al3OgY08DfihXz1RkceOs
 url_klokcatalogus: 16DrvLEXi3mEa9AbSw28YBkYpCvyO1wXwBwaNi7HpBkA

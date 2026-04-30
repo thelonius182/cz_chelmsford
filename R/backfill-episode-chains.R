@@ -12,7 +12,7 @@ df_raw_chains <- cz_extract_sheet(path_chains_cz, sheet_name = "wp_chains")
 df_clean_chains <- df_raw_chains |> filter(episode_chain != "#NONE#")
 
 # rerun query on Nipper first
-wp_slot_alloc_raw <- read_tsv(file = "resources/clockfactory_slot_allocation.tsv", col_types = "cccc")
+# wp_slot_alloc_raw <- read_tsv(file = "resources/clockfactory_slot_allocation.tsv", col_types = "cccc")
 
 qry <- "select id, parent_id, type, title_nl, 
                case when JSON_TYPE(JSON_EXTRACT(content, '$.nl.content')) = 'ARRAY'
@@ -35,7 +35,7 @@ df_cpnm_items <- db_cpnm_items_raw |> mutate(dttm_start = force_tz(dttm_start, t
 df_cpnm_broadcasts <- df_cpnm_items |> 
   filter(type == "broadcast" & dttm_start >= ymd_hms("2023-12-07 13:00:00", tz = "Europe/Amsterdam", quiet = T)) |> 
   add_bc_cols(ts_col = dttm_start) |> mutate(slot_key = paste0(slot_key, "-", bc_week_of_month)) |> 
-  select(parent_id, dttm_start, slot_key, title_nl) |> arrange(parent_id, dttm_start, slot_key) |> 
+  select(parent_id, dttm_start, dttm_stop, slot_key, title_nl) |> arrange(parent_id, dttm_start, slot_key) |> 
   group_by(parent_id) |> mutate(rn = row_number()) |> ungroup() |> filter(rn == 1) |> select(-rn)
   
 df_cpnm_episodes <- df_cpnm_items |> filter(type == "episode") |> select(id, title_nl, has_content) |> arrange(title_nl)

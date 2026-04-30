@@ -140,3 +140,57 @@ for (rn in seq_len(nrow(fix_these))) {
                   .con = con)
   sql_result <- dbExecute(conn = con, statement = qry)
 }
+
+# add missing episodes to clock ----
+qry <- "with broadcasts as (
+    select cast(b.dates->>'$.start' as datetime) as bc_start,
+           cast(b.dates->>'$.end'   as datetime) as bc_stop,
+           e.title_nl,
+           e.id as episode_entry_id
+    from entries b join entries e on e.id = b.parent_id
+                                 and e.deleted_at is null
+                                 and e.type = 'episode'
+    where cast(b.dates->>'$.start' as datetime) between '2026-05-07 12:50:00' and '2026-05-14 12:50:00'
+      and b.deleted_at is null
+      and b.type = 'broadcast'
+      and b.site_id = 1
+    ),
+    ordered as (
+        select bc_start,
+               bc_stop,
+               lead(bc_start) over (order by bc_start) as next_bc_start,
+               title_nl,
+               episode_entry_id
+        from broadcasts
+    )
+    select bc_start,
+           bc_stop,
+           next_bc_start,
+           title_nl,
+           episode_entry_id
+    from ordered
+    where next_bc_start is not null
+      and bc_stop = next_bc_start
+    order by bc_start;"
+cz_week <- dbGetQuery(con, qry) |> mutate(bc_start = force_tz(bc_start, tzone = tz_am)) |> select(slot = bc_start,
+                                                                                                  episode_entry_id)
+cz_replays <- df_new_episodes_replay |> select(slot) |> inner_join(cz_week, by = join_by(slot))
+df_clock_cz.3 <- df_clock_cz.2 |> rows_update(cz_replays, by = "slot")
+
+n <- nrow(df_new_episodes_replay)
+slot <- df_new_episodes_replay$slot
+episode_entry_id <- character(n)
+
+for (rn in seq_len(n)) {
+  episode_entry_id[rn] <- lookup_replay(
+    pm_chains = df_chains,
+    pm_cur_chain = df_new_episodes_replay$episode_chain[rn],
+    pm_replay_slot = df_new_episodes_replay$slot[rn],
+    pm_offset = df_new_episodes_replay$replay_offset[rn]
+  )
+}
+
+sav_tbl <- tibble(
+  slot = slot,
+  episode_entry_id = episode_entry_id
+)
