@@ -53,3 +53,4 @@ df_joined_slots_b <- df_cpnm_epi_bc |> inner_join(df_chains_b, by = join_by(titl
 df_joined_slots_backfill <- df_joined_slots_a |> bind_rows(df_joined_slots_b) |> arrange(episode_chain, dttm_start) |> 
   select(-wp_slot)
 
+program_clock_cz <- read_rds(file = config$clock_home)

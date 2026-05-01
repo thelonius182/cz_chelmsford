@@ -70,25 +70,15 @@ start_of_cz_week <- function(pm_cpnm_db) {
 locked_slots <- function(pm_start, pm_stop, pm_site, pm_db) {
   fmt_start_ts = fmt_ts(pm_start - minutes(10L))
   fmt_stop_ts = fmt_ts(pm_stop - minutes(10L))
-  # sql_stmt <- glue_sql(
-  # "select dates->>'$.start' as locked_slot
-  #  from entries
-  #  where type = 'broadcast'
-  #    and site_id = {pm_site}
-  #    and deleted_at is null
-  #    and dates->>'$.start' between {fmt_start_ts} and {fmt_stop_ts};", 
-  # .con = pm_db)
   sql_stmt <- glue_sql(
-    "select cast(b.dates->>'$.start' as datetime) as slot,
-            e.id as episode_entry_id
-     from entries b join entries e on e.id = b.parent_id
-                                  and e.deleted_at is null
-                                  and e.type = 'episode'
-     where b.type = 'broadcast'
-       and b.site_id = {pm_site}
-       and b.deleted_at is null
-       and b.dates->>'$.start' between {fmt_start_ts} and {fmt_stop_ts}
-     order by 1;", .con = pm_db)
+  "select dates->>'$.start' as slot,
+   parent_id as episode_entry_id
+   from entries
+   where type = 'broadcast'
+     and site_id = {pm_site}
+     and deleted_at is null
+     and dates->>'$.start' between {fmt_start_ts} and {fmt_stop_ts};",
+  .con = pm_db)
   dbGetQuery(pm_db, sql_stmt)
 }
 
