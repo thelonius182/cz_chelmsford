@@ -394,7 +394,7 @@ repeat {
   if (nrow(db_gaps) > 0) {
     flog.error("Detected %s gaps", nrow(db_gaps), name = "clof")
     log_tibble(x = db_gaps |> select(bc_start, title_nl, everything()), 
-               label = "Gaps are AFTER each of these broadcasts", 
+               label = "gaps appear after each of these broadcasts:", 
                n = 10, width = 180)
     break
   }
