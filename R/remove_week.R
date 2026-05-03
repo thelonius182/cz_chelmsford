@@ -2,7 +2,7 @@
 # remove all rows from week
 # - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
 
-begin_ts <- force_tz(ymd_hms("2026-05-07 13:00:00", quiet = T), tzone = "Europe/Amsterdam")
+begin_ts <- force_tz(ymd_hms("2026-05-14 13:00:00", quiet = T), tzone = "Europe/Amsterdam")
 end_ts  <- begin_ts + days(7L) - minutes(10L)
 
 sql_result <- dbExecute(con, "DROP TEMPORARY TABLE IF EXISTS to_delete")
@@ -35,20 +35,22 @@ tryCatch({
   # no delete flag in this table
   sql_result <- dbExecute(con, "delete FROM taxonomables where taxonomable_id in (select id from to_delete)")
   
-  # hide episodes ----
-  sql_stmt <- glue_sql("
-     update entries set deleted_at = {fmt_ts(persist_now)}
-     where deleted_at is null
-       and type = 'episode'
-       and id in (select id from to_delete);", .con = con)
-  sql_result <- dbExecute(con, sql_stmt)
-  
   # hide broadcasts ----
   sql_stmt <- glue_sql("
      update entries set deleted_at = {fmt_ts(persist_now)}
      where deleted_at is null
        and type = 'broadcast'
+       and site_id = 1
        and parent_id in (select id from to_delete)", .con = con)
+  sql_result <- dbExecute(con, sql_stmt)
+  
+  # hide episodes ----
+  sql_stmt <- glue_sql("
+     update entries set deleted_at = {fmt_ts(persist_now)}
+     where deleted_at is null
+       and type = 'episode'
+       and site_id = 1
+       and id in (select id from to_delete);", .con = con)
   sql_result <- dbExecute(con, sql_stmt)
   
   dbCommit(con)
@@ -57,4 +59,4 @@ tryCatch({
   stop(e)
 })
 
-# sql_result <- dbExecute(con, "DROP TEMPORARY TABLE to_delete")
+sql_result <- dbExecute(con, "DROP TEMPORARY TABLE to_delete")

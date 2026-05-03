@@ -1,18 +1,17 @@
 
 # downloads GD ----
-# . trigger GD-auth
-drive_auth(cache = ".secrets", email = "cz.teamservice@gmail.com")
+with_drive_quiet(
+  # . trigger GD-auth
+  drive_auth(cache = ".secrets", email = "cz.teamservice@gmail.com")
+)
 
-# . get episode chain labels from GD
 path_chains_cz <- "/home/lon/R_projects/cz_chelmsford/resources/chains_cz.xlsx"
-drive_download(file = cz_get_url("chains_cz"), overwrite = T, path = path_chains_cz)
-# df_raw_nipper_fresh <- cz_extract_sheet(path_chains_cz, sheet_name = "nipper_fresh")
-# df_nipper_fresh <- df_raw_nipper_fresh |> mutate(wp_title = str_to_lower(wp_title))
+with_drive_quiet(
+  # . get episode chain labels from GD
+  drive_download(file = cz_get_url("chains_cz"), overwrite = T, path = path_chains_cz)
+)
 df_raw_chains <- cz_extract_sheet(path_chains_cz, sheet_name = "wp_chains")
 df_clean_chains <- df_raw_chains |> filter(episode_chain != "#NONE#")
-
-# rerun query on Nipper first
-# wp_slot_alloc_raw <- read_tsv(file = "resources/clockfactory_slot_allocation.tsv", col_types = "cccc")
 
 qry <- "select id, parent_id, type, title_nl, 
                case when JSON_TYPE(JSON_EXTRACT(content, '$.nl.content')) = 'ARRAY'
@@ -29,6 +28,7 @@ db_cpnm_items_raw <- dbGetQuery(con, qry)
 df_cpnm_items <- db_cpnm_items_raw |> mutate(dttm_start = force_tz(dttm_start, tzone = "Europe/Amsterdam"),
                                              dttm_stop  = force_tz(dttm_stop,  tzone = "Europe/Amsterdam"),
                                              title_nl = str_to_lower(title_nl),
+                                             title_nl = str_replace(title_nl, "&amp;", "&"),
                                              dttm_start = if_else(type == "episode" & !is.na(dttm_start), NA_POSIXct_, dttm_start),
                                              dttm_stop  = if_else(type == "episode" & !is.na(dttm_start), NA_POSIXct_, dttm_stop))
 
@@ -50,7 +50,6 @@ df_chains_b <- df_clean_chains |> filter(is.na(wp_slot))
 df_joined_slots_b <- df_cpnm_epi_bc |> inner_join(df_chains_b, by = join_by(title_nl == wp_title)) |> 
   filter(dttm_start < stop_ts)
 
-df_joined_slots_backfill <- df_joined_slots_a |> bind_rows(df_joined_slots_b) |> arrange(episode_chain, dttm_start) |> 
-  select(-wp_slot)
-
-program_clock_cz <- read_rds(file = config$clock_home)
+df_clock_cz_his <- df_joined_slots_a |> bind_rows(df_joined_slots_b) |> arrange(episode_chain, dttm_start) |> 
+  mutate(is_replay = F) |> 
+  select(slot = dttm_start, slot_key, is_replay, episode_entry_id = id, episode_chain)

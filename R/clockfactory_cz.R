@@ -1,5 +1,5 @@
 # - - - - - - - - - - - - -
-# Build CZ programme clock
+# Build program clock CZ
 # - - - - - - - - - - - - -
 
 # init ----
@@ -9,24 +9,12 @@ pacman::p_load(tidyr, dplyr, stringr, readr, lubridate, fs, futile.logger, readx
 config <- read_yaml("config.yaml")
 apf <- flog.appender(appender.file(config$log_appender_file_cz), "clof")
 source("R/custom_functions.R", encoding = "UTF-8")
-flog.info("\n = = = = = =  Building a programme clock for CZ = = = = = =", name = "clof")
+flog.info("\n = = = = = =  Building program clock CZ = = = = = =", name = "clof")
 fmt_ts <- stamp("1958-12-25 13:00:00", quiet = T, orders = "ymd HMS")
 
 SITE <- list(
   CONCERTZENDER = 1L,
   WORLD_OF_JAZZ = 2L
-)
-
-STEP <- list(
-  FACTORY = 10L,
-  EDITOR  = 20L,
-  DESK    = 30L,
-  PLAYOUT = 99L
-)
-
-step_lookup <- tibble(
-  step = c(10L, 20L, 30L, 99L),
-  step_name = c("FACTORY", "EDITOR", "DESK", "PLAYOUT")
 )
 
 # connect to CPNM-database ----
@@ -41,15 +29,20 @@ repeat {
   stop_ts   <- start_ts + days(7L)
   flog.info(str_glue("Week: Thursday {logfmt_ts(start_ts)} to Thursday {logfmt_ts(stop_ts)}"), name = "clof")
   
-  # clockprofile from GD ----
   # . trigger GD-auth
-  drive_auth(cache = ".secrets", email = "cz.teamservice@gmail.com")
   path_clockprofile_cz <- "/home/lon/R_projects/cz_chelmsford/resources/modelklok_cz.xlsx"
-  drive_download(file = cz_get_url("modelklok_cz"), overwrite = T, path = path_clockprofile_cz)
-  
-  # clockcatalogue from GD ----
   path_clockcatalogue <- "/home/lon/R_projects/cz_chelmsford/resources/klokcatalogus.xlsx"
-  drive_download(file = cz_get_url("wordpress_gidsinfo"), overwrite = T, path = path_clockcatalogue)
+  with_drive_quiet(
+    drive_auth(cache = ".secrets", email = "cz.teamservice@gmail.com")
+  )
+  with_drive_quiet(
+    # clockprofile from GD ----
+    drive_download(file = cz_get_url("modelklok_cz"), overwrite = T, path = path_clockprofile_cz, )
+  )
+  with_drive_quiet(
+    # clockcatalogue from GD ----
+    drive_download(file = cz_get_url("wordpress_gidsinfo"), overwrite = T, path = path_clockcatalogue)
+  )
   
   # sheets as df ----
   df_clockprofile_cz_raw <- cz_extract_sheet(path_clockprofile_cz, sheet_name = "cz-data")
@@ -113,7 +106,6 @@ repeat {
     pivot_longer(cols = c(genre_1, genre_2), names_to = NULL, values_to = "genre", values_drop_na = TRUE) |> 
     mutate(titel_nl_lc = str_to_lower(titel_NL))
   
-  
   # validate clock length ----
   cur_clock_minutes <- df_clock_cz_cur |> select(slot, slot_minutes) |> distinct() |> summarise(total = sum(slot_minutes))
   
@@ -147,7 +139,6 @@ repeat {
               and name->>'$.nl' not in ('Algemeen', 'World of Jazz')
             order by 1
             ;"
-  
   ty_genres <- dbGetQuery(con, query)
   df_clock_cz_cur.1 <- df_clock_cz_cur |> left_join(ty_genres, by = join_by(genre == genre_NL))
   missing <- df_clock_cz_cur.1 |> filter(is.na(ty_genre_id)) |> nrow()
@@ -294,29 +285,24 @@ repeat {
   }
   
   # > add replays to database ----
-  # . - restore clock history ----
-  df_clock_cz_his <- read_rds(file = config$clock_home) |> filter(slot < start_ts)
+  # . - fetch current clock history ----
+  source("R/backfill-episode-chains.R", encoding = "UTF-8")
   df_clock_cz.1 <- df_clock_cz_cur.6 |> bind_rows(df_clock_cz_his) |> arrange(slot)
   
   # . prep episode chains ----
   df_chains <- df_clock_cz.1 |> 
     filter(!is_replay) |> select(episode_chain, slot, episode_entry_id) |> 
-    arrange(episode_chain, desc(slot))
+    arrange(episode_chain, desc(slot)) |> distinct()
   
   # . prep replays ----
-  df_new_episodes_replay <- df_clock_cz.1 |> select(-genre, -ty_genre_id) |> distinct() |> 
-    filter(is_replay & is.na(episode_entry_id)) |> 
-    mutate(replay_offset = case_when(nipper_mogelijk != "N" ~ 11L,  # NipperStudio replays broadcasts 6 months ago
-                                     uitzendtype == "live"  ~ 1L,   # live broadcasts should replay the second to last
-                                     TRUE                   ~ 0L)   # semi-live broadcasts can replay the last one
-    ) |> anti_join(df_locked, by = join_by(slot))
+  df_new_episodes_replay <- df_clock_cz_cur.6 |> select(-genre, -ty_genre_id) |> distinct() |> 
+    filter(is_replay & is.na(episode_entry_id)) |> anti_join(df_locked, by = join_by(slot))
   
   # . lookup replays ----
   n <- nrow(df_new_episodes_replay)
   
   if (n > 0) {
-    flog.info(str_glue("adding replay clock items to database, using `created_at` = {fmt_created_at} UTC"), 
-              name = "clof")
+    flog.info("adding replays to database, same `created_at`", name = "clof")
     
     # prep vectors for tibble used later in 'update the clock'
     slot <- df_new_episodes_replay$slot
@@ -325,14 +311,18 @@ repeat {
     for (rn in seq_len(n)) {
       episode_entry_id[rn] <- lookup_replay(pm_chains = df_chains,
                                             pm_cur_chain = df_new_episodes_replay$episode_chain[rn],
-                                            pm_replay_slot = df_new_episodes_replay$slot[rn],
-                                            pm_offset = df_new_episodes_replay$replay_offset[rn])
-      # log not finding an episode to be replayed
-      if (is.na(episode_entry_id[rn]) || episode_entry_id[rn] == "BLANK") {
+                                            pm_replay_target_slot = df_new_episodes_replay$slot[rn],
+                                            pm_bc_type = df_new_episodes_replay$uitzendtype[rn],
+                                            pm_nipperstudio = df_new_episodes_replay$nipper_mogelijk[rn],
+                                            pm_start_of_week = start_ts)
+      # log as "not found"
+      if (episode_entry_id[rn] == "NOT-FOUND") {
         v1 <- df_new_episodes_replay$titel_NL[rn]
         v2 <- df_new_episodes_replay$slot[rn]
         v3 = df_new_episodes_replay$episode_chain[rn]
-        flog.info(str_glue("no replay found for {v1}, slot {v2}, chain {v3}"), name = "clof")
+        flog.error(str_glue("no replay found for {v1}, target slot {v2}, of chain {v3}"), name = "clof")
+        break
+        
       } else {
         # add broadcast to the episode to be replayed
         ins_result <- cpnm_bc_ins(pm_pgm_id = df_new_episodes_replay$pgm_id[rn],
@@ -345,17 +335,21 @@ repeat {
       }
     }
     
-    # update the clock
-    replay_updates <- tibble(slot = slot, episode_entry_id = episode_entry_id)
-    df_clock_cz.2 <- df_clock_cz.1 |> rows_update(replay_updates, by = "slot")
+    # . update the clock ----
+    replay_updates <- tibble(slot = slot, episode_entry_id = episode_entry_id) |>
+      left_join(df_chains, by = join_by(episode_entry_id)) |>
+      select(slot = slot.x, episode_entry_id, replay_source_slot = slot.y)
+
+    dummy_replay_slot <- ymd_hms("1958-12-25 13:00:00", tz = tz_am, quiet = T)
+    df_clock_cz_cur.7 <- df_clock_cz_cur.6 |>
+      mutate(replay_source_slot = if_else(is_replay, dummy_replay_slot, NA_POSIXct_)) |>
+      rows_update(replay_updates, by = "slot") |>
+      select(1:6, replay_source_slot, everything())
     
   } else {
-    flog.info("no replay clock items to add to the database", name = "clof")
-    df_clock_cz.2 <- df_clock_cz.1
+    flog.error("no replays to add, quiting this job", name = "clof")
+    break
   }
-  
-  # . persist clock ----
-  write_rds(df_clock_cz.2, file = config$clock_home)
   
   # . check completeness ----
   fmt_start_ts_m10 = fmt_ts(start_ts - minutes(10L))
@@ -392,12 +386,17 @@ repeat {
   db_gaps <- dbGetQuery(con, qry_gaps)
 
   if (nrow(db_gaps) > 0) {
-    flog.error("Detected %s gaps", nrow(db_gaps), name = "clof")
+    flog.error("Detected %s gaps, quiting this job", nrow(db_gaps), name = "clof")
     log_tibble(x = db_gaps |> select(bc_start, title_nl, everything()), 
                label = "gaps appear after each of these broadcasts:", 
                n = 10, width = 180)
     break
   }
+  
+  # store this week's clock ----
+  qfn_clock_cz_cur <- paste0(config$clock_home_cz, stamp("19581225", quiet = T)(start_ts), ".RDS")
+  write_rds(df_clock_cz_cur.7, qfn_clock_cz_cur)
+  flog.info(str_glue("Clock is stored: {qfn_clock_cz_cur}."), name = "clof")
   
   # Exit from MCL
   break

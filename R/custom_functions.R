@@ -539,10 +539,34 @@ append_chain_item <- function(pm_con,
     )
   })
 }
-
-lookup_replay <- function(pm_chains, pm_cur_chain, pm_replay_slot, pm_offset) {
-  replay_candidates <- pm_chains |> filter(episode_chain == pm_cur_chain & slot < pm_replay_slot)
-  replay_candidates$episode_entry_id[pm_offset + 1L] %||% "BLANK"
+lookup_replay <- function(pm_chains,
+                          pm_cur_chain,
+                          pm_replay_target_slot,
+                          pm_bc_type,
+                          pm_nipperstudio,
+                          pm_start_of_week) {
+  # prune current chain
+  replay_candidates <- pm_chains |> filter(episode_chain == pm_cur_chain)
+  
+  replay_source <- if (nrow(replay_candidates) == 0) {
+    "NOT-FOUND"
+  } else if (pm_bc_type == "live") {
+    shortlist <- replay_candidates |> filter(slot < pm_start_of_week)
+    
+    if (nrow(shortlist) == 0) "NOT-FOUND" else shortlist$episode_entry_id[1]
+    
+  } else if (pm_nipperstudio != "N") {
+    shortlist_nips.1 <- replay_candidates |> filter(slot <= pm_replay_target_slot - days(182L))
+    shortlist_nips.2 <- replay_candidates |> filter(slot < pm_replay_target_slot)
+    shortlist <- if (nrow(shortlist_nips.1) > 0) shortlist_nips.1 else shortlist_nips.2
+    
+    if (nrow(shortlist) == 0) "NOT-FOUND" else shortlist$episode_entry_id[1]
+    
+  } else {
+    shortlist <- replay_candidates |> filter(slot < pm_replay_target_slot)
+    
+    if (nrow(shortlist) == 0) "NOT-FOUND" else shortlist$episode_entry_id[1]
+  }
 }
 
 log_tibble <- function(x, label = deparse(substitute(x)), n = 20, width = 160) {
