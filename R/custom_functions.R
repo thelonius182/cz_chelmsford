@@ -185,14 +185,7 @@ cpnm_epi_bc_ins <- function(pm_pgm_id,
               {pm_now}                                       -- created_at
       );", .con = pm_cpnm_db)
   sql_res <- dbExecute(pm_cpnm_db, sql_stmt)
-  
-  # add episode to its chain
-  # aci <- append_chain_item(pm_con = pm_cpnm_db,
-  #                          pm_label = pm_epi_chain,
-  #                          pm_episode_entry_id = new_id_epi,
-  #                          pm_step_completed_last = pm_epi_step,
-  #                          pm_clockfactory_job = pm_job_id)
-  
+
   # add broadcast
   new_id_bc <- UUIDgenerate(use.time = FALSE)  # v4
   fmt_start_ts = fmt_ts(pm_bc_start)
@@ -573,4 +566,28 @@ log_tibble <- function(x, label = deparse(substitute(x)), n = 20, width = 160) {
   x_tbl <- as_tibble(x)
   txt <- capture.output(print(x_tbl, n = n, width = width))
   flog.error("%s:\n%s", label, paste(txt, collapse = "\n"), name = "clof")
+}
+
+parse_rebuild_options <- function(args = commandArgs(trailingOnly = TRUE)) {
+  rebuild_options <- list(
+    make_option(
+      c("-d", "--date"),
+      type = "character",
+      default = NULL,
+      help = "'rebuild from'-date",
+      metavar = "character"
+    )
+  )
+  
+  opt_parser <- OptionParser(option_list = rebuild_options)
+  opts <- parse_args(opt_parser, args = args)
+  
+  if (is.null(opts$date)) {
+    stop(
+      "missing argument(s). Enter 'rebuild from'-date; use '-d' or --date'.",
+      call. = FALSE
+    )
+  }
+  
+  opts$date
 }

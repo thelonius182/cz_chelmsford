@@ -1,33 +1,62 @@
 # - - - - - - - - - - - - -
-# Build program clock CZ
+# Rebuild program clock CZ
 # - - - - - - - - - - - - -
 
 # init ----
-pacman::p_load(tidyr, dplyr, stringr, readr, lubridate, fs, futile.logger, readxl, DBI, digest,
+pacman::p_load(tidyr, dplyr, stringr, readr, lubridate, fs, futile.logger, readxl, DBI, digest, optparse,
                purrr, httr, jsonlite, yaml, ssh, googledrive, openxlsx, glue, uuid, RMariaDB)
 
 config <- read_yaml("config.yaml")
 apf <- flog.appender(appender.file(config$log_appender_file_cz), "clof")
 source("R/custom_functions.R", encoding = "UTF-8")
-flog.info("\n = = = = = =  Building program clock CZ = = = = = =", name = "clof")
+
+# Where to start rebuilding?
+rebuild_start_chr <- 
+  if (interactive()) {
+    readline("Rebuild from where? (yyyy-mm-dd) ")
+  } else {
+    opts <- parse_rebuild_options()
+    opts$date
+  }
+
+rebuild_start <- ymd(rebuild_start_chr, tz = "Europe/Amsterdam", quiet = T) 
+
+if (is.na(rebuild_start)) {
+  cat(rebuild_start_chr)
+  stop("invalid date")
+}
+
+flog.info("\n = = = = = =  Rebuilding program clock CZ = = = = = =", name = "clof")
 fmt_ts <- stamp("1958-12-25 13:00:00", quiet = T, orders = "ymd HMS")
+tz_am <- "Europe/Amsterdam"
 
 SITE <- list(
   CONCERTZENDER = 1L,
   WORLD_OF_JAZZ = 2L
 )
 
+# Build clock set ----
+clock_set <- dir_ls(path = path_dir(config$clock_home_cz), type = "file", regexp = "_cz_") |> 
+  tibble(file = _) |>
+  mutate(file_date = str_extract(path_file(file), "\\d{8}(?=[.]RDS$)") |> ymd(tz = tz_am),
+         file_start = file_date + hours(13), file_end = file_start + days(7)) |>
+  filter(file_end > rebuild_start) |> arrange(file_start) |> pull(file) |>
+  map(\(file) {
+    readRDS(file) |>
+      as_tibble() |>
+      mutate(source_file = path_file(file))
+  }) |> bind_rows()
+
 # connect to CPNM-database ----
 source("R/cpnm_db_setup.R", encoding = "UTF-8")  
 
-# Find start of week to build ----
-clock_start_utc <- start_of_cz_week(pm_cpnm_db = con)
-tz_am <- "Europe/Amsterdam"
+rebuild_stop <- rebuild_tail()
 start_ts <- force_tz(clock_start_utc$next_week_start, tzone = tz_am)
 stop_ts   <- start_ts + days(7L)
 
 # > Main Control Loop ----
 repeat {
+  break
   flog.info(str_glue("Week: Thursday {logfmt_ts(start_ts)} to Thursday {logfmt_ts(stop_ts)}"), name = "clof")
   
   # . trigger GD-auth
@@ -307,7 +336,7 @@ repeat {
     # prep vectors for tibble used later in 'update the clock'
     slot <- df_new_episodes_replay$slot
     episode_entry_id <- character(n)
-  
+    
     for (rn in seq_len(n)) {
       episode_entry_id[rn] <- lookup_replay(pm_chains = df_chains,
                                             pm_cur_chain = df_new_episodes_replay$episode_chain[rn],
@@ -337,7 +366,7 @@ repeat {
     replay_updates <- tibble(slot = slot, episode_entry_id = episode_entry_id) |>
       left_join(df_chains, by = join_by(episode_entry_id)) |>
       select(slot = slot.x, episode_entry_id, replay_source_slot = slot.y)
-
+    
     dummy_replay_slot <- ymd_hms("1958-12-25 13:00:00", tz = tz_am, quiet = T)
     df_clock_cz_cur.7 <- df_clock_cz_cur.6 |>
       mutate(replay_source_slot = if_else(is_replay, dummy_replay_slot, NA_POSIXct_)) |>
@@ -382,7 +411,7 @@ repeat {
               and bc_stop != next_bc_start
             order by bc_start;", .con = con)
   db_gaps <- dbGetQuery(con, qry_gaps)
-
+  
   if (nrow(db_gaps) > 0) {
     flog.error("Detected %s gaps, quiting this job", nrow(db_gaps), name = "clof")
     log_tibble(x = db_gaps |> select(bc_start, title_nl, everything()), 
