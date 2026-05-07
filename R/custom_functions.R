@@ -14,6 +14,8 @@ cz_get_url <- function(cz_ss) {
 # improve name for 'has non-zero number of characters'
 has_value <- function(x) nzchar(x)
 
+fmt_ts <- stamp("1958-12-25 13:00:00", quiet = T, orders = "ymd HMS")
+
 add_bc_cols <- function(data, ts_col, tz = "Europe/Amsterdam") {
   ts_col <- rlang::ensym(ts_col)
   
@@ -150,8 +152,10 @@ cpnm_epi_bc_ins <- function(pm_pgm_id,
                             pm_bc_start,
                             pm_bc_minutes,
                             pm_created_at,
+                            pm_ent_tbl,
                             pm_cpnm_db) {
   
+  # always get program name from PRD-table 'entries'!
   sql_stmt <- glue_sql("select title, slug from entries where id = {pm_pgm_id};", .con = pm_cpnm_db)
   df_cur_pgm <- dbGetQuery(pm_cpnm_db, sql_stmt)
   
@@ -160,7 +164,7 @@ cpnm_epi_bc_ins <- function(pm_pgm_id,
   bc_seconds <- 60 * pm_bc_minutes
   pm_now <- format(pm_created_at, tz = "UTC", usetz = FALSE)
   sql_stmt <- glue_sql("
-      INSERT INTO entries (id,
+      INSERT INTO {`pm_ent_tbl`} (id,
                            type,
                            title,
                            slug,
@@ -191,7 +195,7 @@ cpnm_epi_bc_ins <- function(pm_pgm_id,
   fmt_start_ts = fmt_ts(pm_bc_start)
   fmt_stop_ts = fmt_ts(pm_bc_start + minutes(pm_bc_minutes))
   sql_stmt <- glue_sql("
-      INSERT INTO entries (id,
+      INSERT INTO {`pm_ent_tbl`} (id,
                            type,
                            title,
                            slug,
@@ -224,6 +228,7 @@ cpnm_bc_ins <- function(pm_pgm_id,
                         pm_bc_start,
                         pm_bc_minutes,
                         pm_created_at,
+                        pm_build_type,
                         pm_cpnm_db) {
   sql_stmt <- glue_sql("select title, slug from entries where id = {pm_pgm_id};", .con = pm_cpnm_db)
   df_cur_pgm <- dbGetQuery(pm_cpnm_db, sql_stmt)
@@ -233,8 +238,9 @@ cpnm_bc_ins <- function(pm_pgm_id,
   fmt_start_ts = fmt_ts(pm_bc_start)
   fmt_stop_ts = fmt_ts(pm_bc_start + minutes(pm_bc_minutes))
   pm_now <- format(pm_created_at, tz = "UTC", usetz = FALSE)
+  ent_tbl <- if (pm_build_type == BUILD_TYPE$PROD) "entries" else "clock_revision_entries"
   sql_stmt <- glue_sql("
-      INSERT INTO entries (id,
+      INSERT INTO {`ent_tbl`} (id,
                            type,
                            title,
                            slug,
@@ -262,6 +268,7 @@ cpnm_bc_ins <- function(pm_pgm_id,
 cpnm_txb_edi_ins <- function(pm_epi_id,
                          pm_txy_id,
                          pm_role_NL,
+                         pm_txb_tbl,
                          pm_cpnm_db) {
   role_EN <- if (str_ends(pm_role_NL, pattern = "tatie")) {
     "Produced & presented by"
@@ -270,7 +277,7 @@ cpnm_txb_edi_ins <- function(pm_epi_id,
   }
   
   sql_stmt <- glue_sql("
-      INSERT INTO taxonomables (taxonomy_id,
+      INSERT INTO {`pm_txb_tbl`} (taxonomy_id,
                                 taxonomable_type,
                                 taxonomable_id,
                                 label)
@@ -287,9 +294,10 @@ cpnm_txb_edi_ins <- function(pm_epi_id,
 cpnm_txb_ins <- function(pm_epi_id,
                          pm_txy_id,
                          pm_order,
+                         pm_txb_tbl,
                          pm_cpnm_db) {
   sql_stmt <- glue_sql("
-      INSERT INTO taxonomables (taxonomy_id,
+      INSERT INTO {`pm_txb_tbl`} (taxonomy_id,
                                 taxonomable_type,
                                 taxonomable_id,
                                 `order`)
@@ -300,18 +308,6 @@ cpnm_txb_ins <- function(pm_epi_id,
       );", .con = pm_cpnm_db)
   sql_res <- dbExecute(pm_cpnm_db, sql_stmt)
 }
-
-# cpnm_epi_get <- function(pm_pgm_id,
-#                          pm_start,
-#                          pm_cpnm_db) {
-#   sql_stmt <- glue_sql("select e.id as epi_id
-#                         from entries p join entries e on e.parent_id = p.id
-#                                        join entries b on b.parent_id = e.id
-#                         where b.dates->>'$.start' = {pm_start}
-#                           and p.id = {pm_pgm_id}
-#                         ;", .con = pm_cpnm_db)
-#   sql_res <- dbGetQuery(pm_cpnm_db, sql_stmt)
-# }
 
 cpnm_uni_get <- function(pm_pgm_id, pm_max_start, pm_cpnm_db) {
   sql_stmt <- glue_sql("select e.id as epi_id, 
@@ -337,38 +333,17 @@ cpnm_img_get <- function(pm_img_id, pm_cpnm_db) {
   sql_res <- dbGetQuery(pm_cpnm_db, sql_stmt)
 }
 
-# cpnm_chk_slots <- function(pm_site_id, pm_cpnm_db) {
-#   sql_stmt <- glue_sql("select max(dates->>'$.start') as max_start_cz 
-#                         from entries 
-#                         where type = 'broadcast' 
-#                           and site_id = {pm_site_id}
-#                           and deleted_at is null;",
-#                        .con = pm_cpnm_db)
-#   sql_res <- dbGetQuery(pm_cpnm_db, sql_stmt)
-# }
-
-# cpnm_chk_cz_rp <- function(pm_ts, pm_pgm_id, pm_cpnm_db) {
-#   sql_stmt <- glue_sql("SELECT g.id AS pgm_id
-#                         FROM entries AS b
-#                         JOIN entries AS p ON p.id = b.parent_id
-#                         JOIN entries AS g ON g.id = p.parent_id
-#                         WHERE b.type = 'broadcast'
-#                           AND b.site_id = 1
-#                           AND CAST(JSON_UNQUOTE(JSON_EXTRACT(b.dates, '$.start')) AS DATETIME) = {pm_ts}
-#                         limit 1
-#                         ;", 
-#                        .con = pm_cpnm_db)
-#   sql_res <- dbGetQuery(pm_cpnm_db, sql_stmt)
-#   sql_res$pgm_id == pm_pgm_id
-# }
-
-clock2db <- function(pm_clock_tib, pm_created_at, pm_site, pm_db) {
+clock2db <- function(pm_clock_tib, pm_created_at, pm_site, pm_build_type, pm_db) {
   
   # - some fresh programs have 2 main genres, so have 2 records; treat them separately: 'a' for all columns,
   #   and 'b' just for the extra genre
   cur_clock <- pm_clock_tib |> group_by(slot) |> mutate(tib_item = row_number()) |> ungroup()
   cur_clock_a <- cur_clock |> filter(tib_item == 1L)
   cur_clock_b <- cur_clock |> filter(tib_item == 2L)
+  
+  # assign correct table names
+  ent_tbl <- if (pm_build_type == BUILD_TYPE$PROD) "entries" else "clock_revision_entries"
+  txb_tbl <- if (pm_build_type == BUILD_TYPE$PROD) "taxonomables" else "clock_revision_taxonomables"
   
   for (rn in seq_len(nrow(cur_clock_a))) {
     
@@ -381,12 +356,15 @@ clock2db <- function(pm_clock_tib, pm_created_at, pm_site, pm_db) {
                                     pm_bc_start = cur_clock_a$slot[rn],
                                     pm_bc_minutes = cur_clock_a$slot_minutes[rn],
                                     pm_created_at,
+                                    pm_ent_tbl = ent_tbl,
                                     pm_cpnm_db = pm_db)
+    
     # . genre ----
     # - add an `episode` taxonomable record for first genre
     txb_res <- cpnm_txb_ins(pm_epi_id = fresh_epi_bc,
                             pm_txy_id = cur_clock_a$ty_genre_id[rn],
                             pm_order = 1L,
+                            pm_txb_tbl = txb_tbl,
                             pm_cpnm_db = pm_db)
     
     # - add an `episode` taxonomable record for second genre
@@ -396,6 +374,7 @@ clock2db <- function(pm_clock_tib, pm_created_at, pm_site, pm_db) {
       txb_res <- cpnm_txb_ins(pm_epi_id = fresh_epi_bc,
                               pm_txy_id = df_g2$ty_genre_id,
                               pm_order = 2L,
+                              pm_txb_tbl = txb_tbl,
                               pm_cpnm_db = pm_db)
     }
     
@@ -404,6 +383,7 @@ clock2db <- function(pm_clock_tib, pm_created_at, pm_site, pm_db) {
     txb_res <- cpnm_txb_edi_ins(pm_epi_id = fresh_epi_bc,
                                 pm_txy_id = cur_clock_a$ty_editor_id[rn],
                                 pm_role_NL = cur_clock_a$productie[rn],
+                                pm_txb_tbl = txb_tbl,
                                 pm_cpnm_db = pm_db)
   }
 }
@@ -532,6 +512,7 @@ append_chain_item <- function(pm_con,
     )
   })
 }
+
 lookup_replay <- function(pm_chains,
                           pm_cur_chain,
                           pm_replay_target_slot,
@@ -590,4 +571,11 @@ parse_rebuild_options <- function(args = commandArgs(trailingOnly = TRUE)) {
   }
   
   opts$date
+}
+
+start_of_week <- function(pm_slot) {
+  candidate <- floor_date(pm_slot, "day") - 
+               days((wday(pm_slot, week_start = DAYS_OF_WEEK$MONDAY) - DAYS_OF_WEEK$THURSDAY) %% 7) + 
+               hours(13)
+  if_else(candidate <= pm_slot, candidate, candidate - days(7))
 }

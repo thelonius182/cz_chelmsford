@@ -8,7 +8,7 @@ ins_result <-
 
 # insert editor ----
 cpnm_edi_ins(pm_name_NL = 'Alexander Kraft van Ermel',
-                pm_cpnm_db = con)
+             pm_cpnm_db = con)
 
 # CZ: append missing colofons ----
 for (cur_editor in tbl_w_ids_2_missing$redacteurs) {

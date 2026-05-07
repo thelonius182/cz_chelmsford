@@ -27,37 +27,104 @@ if (is.na(rebuild_start)) {
 }
 
 flog.info("\n = = = = = =  Rebuilding program clock CZ = = = = = =", name = "clof")
+
+TZ_AM <- "Europe/Amsterdam"
+SITE <- list(CONCERTZENDER = 1L, WORLD_OF_JAZZ = 2L)
+BUILD_TYPE <- list(PROD = 1L, REV  = 2L)
+DAYS_OF_WEEK <- list(MONDAY = 1L, THURSDAY = 4L)
 fmt_ts <- stamp("1958-12-25 13:00:00", quiet = T, orders = "ymd HMS")
-tz_am <- "Europe/Amsterdam"
+cur_build_type <- BUILD_TYPE$REV
 
-SITE <- list(
-  CONCERTZENDER = 1L,
-  WORLD_OF_JAZZ = 2L
-)
-
-# Build clock set ----
-clock_set <- dir_ls(path = path_dir(config$clock_home_cz), type = "file", regexp = "_cz_") |> 
-  tibble(file = _) |>
-  mutate(file_date = str_extract(path_file(file), "\\d{8}(?=[.]RDS$)") |> ymd(tz = tz_am),
-         file_start = file_date + hours(13), file_end = file_start + days(7)) |>
-  filter(file_end > rebuild_start) |> arrange(file_start) |> pull(file) |>
-  map(\(file) {
-    readRDS(file) |>
-      as_tibble() |>
-      mutate(source_file = path_file(file))
-  }) |> bind_rows()
+# Build clock set FS----
+# clock_set_fs <- dir_ls(path = path_dir(config$clock_home_cz), type = "file", regexp = "_cz_") |> 
+#   tibble(file = _) |>
+#   mutate(file_date = str_extract(path_file(file), "\\d{8}(?=[.]RDS$)") |> ymd(tz = TZ_AM),
+#          file_start = file_date + hours(13L), file_end = file_start + days(7L)) |>
+#   filter(file_end > rebuild_start) |> arrange(file_start) |> pull(file) |>
+#   map(\(file) {
+#     readRDS(file) |> as_tibble() |> mutate(source_file = path_file(file))
+#   }) |> bind_rows()
 
 # connect to CPNM-database ----
 source("R/cpnm_db_setup.R", encoding = "UTF-8")  
 
-rebuild_stop <- rebuild_tail()
-start_ts <- force_tz(clock_start_utc$next_week_start, tzone = tz_am)
-stop_ts   <- start_ts + days(7L)
+# Build production clock set DB----
+rebuild_start13 <- rebuild_start
+hour(rebuild_start13) <- 13L
+rebuild_start_fmt <- fmt_ts(rebuild_start13)
+sql_stmt <- glue_sql("with ds1 as (
+select cast(b.dates->>'$.start' as datetime) as bc_start,
+	   cast(b.dates->>'$.end'   as datetime) as bc_stop,
+	   e.title_nl as bc_name,
+       e.id as ep_id,
+       b.id as bc_id,
+       case when JSON_TYPE(JSON_EXTRACT(e.content, '$.nl.content')) = 'ARRAY'
+             AND JSON_LENGTH(JSON_EXTRACT(e.content, '$.nl.content')) > 0
+            then 'Y' else 'N' end as ep_has_content
+from entries b join entries e on e.id = b.parent_id
+							               and e.deleted_at is null
+							               and e.type = 'episode'
+							               and e.site_id = 1
+where cast(b.dates->>'$.start' as datetime) >= {rebuild_start_fmt}
+	and b.deleted_at is null
+	and b.type = 'broadcast'
+	and b.site_id = 1
+), ds2 as (
+select ep_id, min(cast(b.dates->>'$.start' as datetime)) as first_bc
+from ds1 join entries b on b.parent_id = ep_id
+	                     and b.deleted_at is null
+	                     and b.type = 'broadcast'
+					             and b.site_id = 1
+group by ep_id
+), ds3 as (
+select ep_id, b.id as first_bc_id
+from ds2 join entries b on b.parent_id = ep_id
+	                     and b.deleted_at is null
+	                     and b.type = 'broadcast'
+					             and b.site_id = 1
+                       and cast(b.dates->>'$.start' as datetime) = first_bc
+)
+select ds1.bc_start,
+       ds1.bc_stop,
+       ds1.bc_name,
+       ds1.ep_id,
+       ds1.ep_has_content,
+       ds1.bc_id,
+       case when ds1.bc_start = ds2.first_bc then null else ds2.first_bc    end as bc_rp_source_start,
+       case when ds1.bc_start = ds2.first_bc then null else ds3.first_bc_id end as bc_rp_source_id
+from ds1 join ds2 on ds2.ep_id = ds1.ep_id
+         join ds3 on ds3.ep_id = ds1.ep_id     
+order by 1;", .con = con)
+prod_clock_set_db_raw <- dbGetQuery(con, sql_stmt)
+prod_clock_set_db <- prod_clock_set_db_raw |> 
+  mutate(across(where(~ inherits(.x, "POSIXct")), ~ force_tz(.x, tzone = "Europe/Amsterdam")))
+
+# clock_set_compare <- clock_set_db |> left_join(clock_set_fs, by = join_by(bc_start == slot)) 
+# clock_diffs <- clock_set_compare |> filter(ep_id != episode_entry_id | is.na(slot_key))
+
+# create revision helper tables ----
+qry <- "drop table clock_revision_entries"
+dbExecute(con, qry)
+qry <- read_file(file = "resources/ddl_clock_revision_entries.sql")
+dbExecute(con, qry)
+qry <- "drop table clock_revision_taxonomables"
+dbExecute(con, qry)
+qry <- read_file(file = "resources/ddl_clock_revision_taxonomables.sql")
+dbExecute(con, qry)
+
+# Pre-populate revision clock. Pre-pop is required because replays can originate from episodes before rebuild_start,
+# and not having an active episode in the revision clock will block adding a broadcast (FK-constraint).
+# The oldest replays required are NipperStudio replays (dating back 185 days). So no need to load more than the last 200 days.
+qry_txt <- read_file(file = "resources/backfill_clock_revision_entries_ep.sql")
+qry <- str_replace(qry_txt, "[$]#date", fmt_ts(rebuild_start - days(200)))
+dbExecute(con, qry)
+qry_txt <- read_file(file = "resources/backfill_clock_revision_entries_bc.sql")
+qry <- str_replace(qry_txt, "[$]#date", fmt_ts(rebuild_start - days(200)))
+dbExecute(con, qry)
 
 # > Main Control Loop ----
 repeat {
-  break
-  flog.info(str_glue("Week: Thursday {logfmt_ts(start_ts)} to Thursday {logfmt_ts(stop_ts)}"), name = "clof")
+  flog.info(str_glue("Start = Thursday {rebuild_start_fmt}"), name = "clof")
   
   # . trigger GD-auth
   path_clockprofile_cz <- "/home/lon/R_projects/cz_chelmsford/resources/modelklok_cz.xlsx"
@@ -110,7 +177,7 @@ repeat {
     mutate(block = 5L)
   
   # build a clock ----
-  bc_week_ts <- tibble(ts = seq(from = start_ts, to = stop_ts - hours(1), by = "hour"))
+  bc_week_ts <- tibble(ts = seq(from = rebuild_start, to = max(clock_set_db$bc_start), by = "hour"))
   
   df_calendar <- add_bc_cols(bc_week_ts, ts) |> 
     mutate(cycle = if_else(bc_day_label == "do" & bc_hour_start == 13, week_label(ts), NA_character_)) |> 
@@ -135,14 +202,6 @@ repeat {
     select(-hh, -mac, -`dummy-1`, -slug) |> 
     pivot_longer(cols = c(genre_1, genre_2), names_to = NULL, values_to = "genre", values_drop_na = TRUE) |> 
     mutate(titel_nl_lc = str_to_lower(titel_NL))
-  
-  # validate clock length ----
-  cur_clock_minutes <- df_clock_cz_cur |> select(slot, slot_minutes) |> distinct() |> summarise(total = sum(slot_minutes))
-  
-  if (cur_clock_minutes$total != 10080L) {
-    flog.error("invalid clock length (1): expected 10080 minutes, but got {cur_clock_minutes}; quiting this job.", name = "clof")
-    break
-  }
   
   # validate catalogue ----
   missing <- df_clock_cz_cur |> filter(is.na(titel_NL)) |> nrow()
@@ -259,46 +318,31 @@ repeat {
     break
   }
   
-  # . check length ----
-  cur_clock_minutes <- df_clock_cz_cur.4 |> distinct(slot, slot_minutes) |> summarise(total = sum(slot_minutes))
-  
-  if (cur_clock_minutes$total != 10080L) {
-    flog.error(str_glue("invalid clock length (2): expected 10080 minutes, but got {cur_clock_minutes$total}; quiting this job."), 
-               name = "clof")
-    break
-  }
-  
-  # update locked slots ----
-  df_locked <- locked_slots(pm_start = start_ts, pm_stop = stop_ts, pm_site = SITE$CONCERTZENDER, pm_db = con) |>
-    mutate(slot = ymd_hms(slot, tz = "Europe/Amsterdam", quiet = T))
-  df_clock_cz_cur.5 <- df_clock_cz_cur.4 |> mutate(episode_entry_id = NA_character_) |> 
-    select(1:5, is_replay, episode_entry_id, episode_chain, everything()) |> arrange(slot) |> 
-    rows_update(y = df_locked, by = "slot")
-  
+  df_clock_cz_cur.5 <- df_clock_cz_cur.4 |> mutate(episode_entry_id = NA_character_)
+
   # > add new to database ----
   # do new ones first, to make sure that episodes replaying early, so this week, can be found
-  df_new_episodes_fresh <- df_clock_cz_cur.5 |> filter(!is_replay & is.na(episode_entry_id)) |> 
-    # don't override existing slots
-    anti_join(df_locked, by = join_by(slot))
-  
+  df_new_episodes_fresh <- df_clock_cz_cur.5 |> filter(!is_replay & is.na(episode_entry_id))
+
   # prepped value for creation date the way the database stores it: with timezone UTC
   ts_now = now()
   fmt_created_at = format(ts_now, tz = "UTC", usetz = FALSE)
   
   if (nrow(df_new_episodes_fresh) > 0) {
-    flog.info(str_glue("adding fresh clock items to database, using `created_at` = {fmt_created_at} UTC"), name = "clof")
+    flog.info(str_glue("adding fresh clock items to clock_revision_entries, using `created_at` = {fmt_created_at} UTC"), name = "clof")
     
     # insert everything with identical `created_at` timestamps, making it a set
     func_result <- clock2db(pm_clock_tib = df_new_episodes_fresh, 
                             pm_created_at = ts_now, 
                             pm_site = SITE$CONCERTZENDER, 
+                            pm_build_type = BUILD_TYPE$REV,
                             pm_db = con)
     
     # . update clock tibble rows ----
     qry <- glue_sql(
       "select cast(b.dates->>'$.start' as datetime) as slot,
        e.id as episode_entry_id
-     from entries b join entries e on e.id = b.parent_id
+     from clock_revision_entries b join clock_revision_entries e on e.id = b.parent_id
                                   and e.deleted_at is null
                                   and e.type = 'episode'
      where b.deleted_at is null
@@ -306,32 +350,33 @@ repeat {
        and b.site_id = 1
        and b.created_at = {fmt_created_at}
      order by 1;", .con = con)
-    db_new_items <- dbGetQuery(con, qry) |> mutate(slot = force_tz(slot, tzone = tz_am))
+    db_new_items <- dbGetQuery(con, qry) |> mutate(slot = force_tz(slot, tzone = TZ_AM))
     df_clock_cz_cur.6 <- df_clock_cz_cur.5 |> rows_update(db_new_items, by = "slot")
   } else {
-    flog.error("no fresh clock items found, quiting this job", name = "clof")
+    flog.error("no fresh revision_clock items found, quiting this job", name = "clof")
     break
   }
   
   # > add replays to database ----
   # . - fetch current clock history ----
+  his_stop_ts <- rebuild_start
   source("R/backfill-episode-chains.R", encoding = "UTF-8")
-  df_clock_cz.1 <- df_clock_cz_cur.6 |> bind_rows(df_clock_cz_his) |> arrange(slot)
+  # df_clock_cz.1 <- df_clock_cz_cur.6 |> bind_rows(df_clock_cz_his) |> arrange(slot)
   
   # . prep episode chains ----
-  df_chains <- df_clock_cz.1 |> 
+  df_chains <- df_clock_cz_cur.6 |> bind_rows(df_clock_cz_his) |> 
     filter(!is_replay) |> select(episode_chain, slot, episode_entry_id) |> 
     arrange(episode_chain, desc(slot)) |> distinct()
   
   # . prep replays ----
   df_new_episodes_replay <- df_clock_cz_cur.6 |> select(-genre, -ty_genre_id) |> distinct() |> 
-    filter(is_replay & is.na(episode_entry_id)) |> anti_join(df_locked, by = join_by(slot))
+    filter(is_replay & is.na(episode_entry_id))
   
   # . lookup replays ----
   n <- nrow(df_new_episodes_replay)
   
   if (n > 0) {
-    flog.info("adding replays to database, same `created_at`", name = "clof")
+    flog.info("adding revision_replays, same `created_at`", name = "clof")
     
     # prep vectors for tibble used later in 'update the clock'
     slot <- df_new_episodes_replay$slot
@@ -343,7 +388,7 @@ repeat {
                                             pm_replay_target_slot = df_new_episodes_replay$slot[rn],
                                             pm_bc_type = df_new_episodes_replay$uitzendtype[rn],
                                             pm_nipperstudio = df_new_episodes_replay$nipper_mogelijk[rn],
-                                            pm_start_of_week = start_ts)
+                                            pm_start_of_week = start_of_week(df_new_episodes_replay$slot[rn]))
       # log as "not found"
       if (episode_entry_id[rn] == "NOT-FOUND") {
         v1 <- df_new_episodes_replay$titel_NL[rn]
@@ -358,6 +403,7 @@ repeat {
                                   pm_bc_start = df_new_episodes_replay$slot[rn],
                                   pm_bc_minutes = df_new_episodes_replay$slot_minutes[rn],
                                   pm_created_at = ts_now,
+                                  pm_build_type = BUILD_TYPE$REV,
                                   pm_cpnm_db = con)
       }
     }
@@ -367,7 +413,7 @@ repeat {
       left_join(df_chains, by = join_by(episode_entry_id)) |>
       select(slot = slot.x, episode_entry_id, replay_source_slot = slot.y)
     
-    dummy_replay_slot <- ymd_hms("1958-12-25 13:00:00", tz = tz_am, quiet = T)
+    dummy_replay_slot <- ymd_hms("1958-12-25 13:00:00", tz = TZ_AM, quiet = T)
     df_clock_cz_cur.7 <- df_clock_cz_cur.6 |>
       mutate(replay_source_slot = if_else(is_replay, dummy_replay_slot, NA_POSIXct_)) |>
       rows_update(replay_updates, by = "slot") |>
@@ -377,53 +423,6 @@ repeat {
     flog.error("no replays to add, quiting this job", name = "clof")
     break
   }
-  
-  # . check completeness ----
-  fmt_start_ts_m10 = fmt_ts(start_ts - minutes(10L))
-  fmt_stop_ts_m10 = fmt_ts(stop_ts - minutes(10L))
-  
-  qry_gaps <- glue_sql("
-            with broadcasts as (
-                select cast(b.dates->>'$.start' as datetime) as bc_start,
-                       cast(b.dates->>'$.end'   as datetime) as bc_stop,
-                       e.title_nl
-                from entries b join entries e on e.id = b.parent_id
-                                             and e.deleted_at is null
-                                             and e.type = 'episode'
-                where cast(b.dates->>'$.start' as datetime) between {fmt_start_ts_m10} and {fmt_stop_ts_m10}
-                  and b.deleted_at is null
-                  and b.type = 'broadcast'
-                  and b.site_id = 1
-            ),
-            ordered as (
-                select bc_start,
-                       bc_stop,
-                       lead(bc_start) over (order by bc_start) as next_bc_start,
-                       title_nl
-                from broadcasts
-            )
-            select bc_start,
-                   bc_stop,
-                   next_bc_start,
-                   title_nl
-            from ordered
-            where next_bc_start is not null
-              and bc_stop != next_bc_start
-            order by bc_start;", .con = con)
-  db_gaps <- dbGetQuery(con, qry_gaps)
-  
-  if (nrow(db_gaps) > 0) {
-    flog.error("Detected %s gaps, quiting this job", nrow(db_gaps), name = "clof")
-    log_tibble(x = db_gaps |> select(bc_start, title_nl, everything()), 
-               label = "gaps appear after each of these broadcasts:", 
-               n = 10, width = 180)
-    break
-  }
-  
-  # store this week's clock ----
-  qfn_clock_cz_cur <- paste0(config$clock_home_cz, stamp("19581225", quiet = T)(start_ts), ".RDS")
-  write_rds(df_clock_cz_cur.7, qfn_clock_cz_cur)
-  flog.info(str_glue("Clock is stored: {qfn_clock_cz_cur}."), name = "clof")
   
   # Exit from MCL
   break

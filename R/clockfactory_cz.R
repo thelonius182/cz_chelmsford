@@ -10,7 +10,6 @@ config <- read_yaml("config.yaml")
 apf <- flog.appender(appender.file(config$log_appender_file_cz), "clof")
 source("R/custom_functions.R", encoding = "UTF-8")
 flog.info("\n = = = = = =  Building program clock CZ = = = = = =", name = "clof")
-fmt_ts <- stamp("1958-12-25 13:00:00", quiet = T, orders = "ymd HMS")
 
 SITE <- list(
   CONCERTZENDER = 1L,
@@ -263,6 +262,7 @@ repeat {
     func_result <- clock2db(pm_clock_tib = df_new_episodes_fresh, 
                             pm_created_at = ts_now, 
                             pm_site = SITE$CONCERTZENDER, 
+                            pm_build_type = "PRD",
                             pm_db = con)
     
     # . update clock tibble rows ----
@@ -286,11 +286,11 @@ repeat {
   
   # > add replays to database ----
   # . - fetch current clock history ----
+  his_stop_ts <- start_ts
   source("R/backfill-episode-chains.R", encoding = "UTF-8")
-  df_clock_cz.1 <- df_clock_cz_cur.6 |> bind_rows(df_clock_cz_his) |> arrange(slot)
   
   # . prep episode chains ----
-  df_chains <- df_clock_cz.1 |> 
+  df_chains <- df_clock_cz_cur.6 |> bind_rows(df_clock_cz_his) |> 
     filter(!is_replay) |> select(episode_chain, slot, episode_entry_id) |> 
     arrange(episode_chain, desc(slot)) |> distinct()
   
