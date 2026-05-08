@@ -64,4 +64,6 @@ FROM entries e
 WHERE e.type = 'broadcast'
   AND e.deleted_at IS NULL
   AND e.site_id = 1
-  AND e.dates->>'$.start' >= '$#date';
+  AND e.dates->>'$.start' >= ? AND e.dates->>'$.start' < ?
+  ;
+  

@@ -11,13 +11,19 @@ apf <- flog.appender(appender.file(config$log_appender_file_cz), "clof")
 source("R/custom_functions.R", encoding = "UTF-8")
 
 # Where to start rebuilding?
-rebuild_start_chr <- 
+rebuild_start_chr <-
   if (interactive()) {
-    readline("Rebuild from where? (yyyy-mm-dd) ")
+    ask_rebuild_date()
   } else {
     opts <- parse_rebuild_options()
     opts$date
   }
+
+rebuild_start <- as.Date(rebuild_start_chr)
+
+if (is.na(rebuild_start)) {
+  stop("Invalid date. Please use yyyy-mm-dd.", call. = FALSE)
+}
 
 rebuild_start <- ymd(rebuild_start_chr, tz = "Europe/Amsterdam", quiet = T) 
 
@@ -48,54 +54,12 @@ cur_build_type <- BUILD_TYPE$REV
 # connect to CPNM-database ----
 source("R/cpnm_db_setup.R", encoding = "UTF-8")  
 
-# Build production clock set DB----
+# Build production clock set ----
 rebuild_start13 <- rebuild_start
 hour(rebuild_start13) <- 13L
-rebuild_start_fmt <- fmt_ts(rebuild_start13)
-sql_stmt <- glue_sql("with ds1 as (
-select cast(b.dates->>'$.start' as datetime) as bc_start,
-	   cast(b.dates->>'$.end'   as datetime) as bc_stop,
-	   e.title_nl as bc_name,
-       e.id as ep_id,
-       b.id as bc_id,
-       case when JSON_TYPE(JSON_EXTRACT(e.content, '$.nl.content')) = 'ARRAY'
-             AND JSON_LENGTH(JSON_EXTRACT(e.content, '$.nl.content')) > 0
-            then 'Y' else 'N' end as ep_has_content
-from entries b join entries e on e.id = b.parent_id
-							               and e.deleted_at is null
-							               and e.type = 'episode'
-							               and e.site_id = 1
-where cast(b.dates->>'$.start' as datetime) >= {rebuild_start_fmt}
-	and b.deleted_at is null
-	and b.type = 'broadcast'
-	and b.site_id = 1
-), ds2 as (
-select ep_id, min(cast(b.dates->>'$.start' as datetime)) as first_bc
-from ds1 join entries b on b.parent_id = ep_id
-	                     and b.deleted_at is null
-	                     and b.type = 'broadcast'
-					             and b.site_id = 1
-group by ep_id
-), ds3 as (
-select ep_id, b.id as first_bc_id
-from ds2 join entries b on b.parent_id = ep_id
-	                     and b.deleted_at is null
-	                     and b.type = 'broadcast'
-					             and b.site_id = 1
-                       and cast(b.dates->>'$.start' as datetime) = first_bc
-)
-select ds1.bc_start,
-       ds1.bc_stop,
-       ds1.bc_name,
-       ds1.ep_id,
-       ds1.ep_has_content,
-       ds1.bc_id,
-       case when ds1.bc_start = ds2.first_bc then null else ds2.first_bc    end as bc_rp_source_start,
-       case when ds1.bc_start = ds2.first_bc then null else ds3.first_bc_id end as bc_rp_source_id
-from ds1 join ds2 on ds2.ep_id = ds1.ep_id
-         join ds3 on ds3.ep_id = ds1.ep_id     
-order by 1;", .con = con)
-prod_clock_set_db_raw <- dbGetQuery(con, sql_stmt)
+rebuild_start13_utc <- force_tz(rebuild_start13, tzone = "UTC")
+prod_clock_set_db_raw <- dbGetQuery(conn = con, statement = read_file("resources/load-production-clockset.sql"), 
+                                    params = list(rebuild_start13_utc))
 prod_clock_set_db <- prod_clock_set_db_raw |> 
   mutate(across(where(~ inherits(.x, "POSIXct")), ~ force_tz(.x, tzone = "Europe/Amsterdam")))
 
@@ -103,24 +67,18 @@ prod_clock_set_db <- prod_clock_set_db_raw |>
 # clock_diffs <- clock_set_compare |> filter(ep_id != episode_entry_id | is.na(slot_key))
 
 # create revision helper tables ----
-qry <- "drop table clock_revision_entries"
-dbExecute(con, qry)
-qry <- read_file(file = "resources/ddl_clock_revision_entries.sql")
-dbExecute(con, qry)
-qry <- "drop table clock_revision_taxonomables"
-dbExecute(con, qry)
-qry <- read_file(file = "resources/ddl_clock_revision_taxonomables.sql")
-dbExecute(con, qry)
+sql_sts <- dbExecute(conn = con, statement = "drop table clock_revision_entries")
+sql_sts <- dbExecute(conn = con, statement = read_file(file = "resources/ddl_clock_revision_entries.sql"))
+sql_sts <- dbExecute(conn = con, statement = "drop table clock_revision_taxonomables")
+sql_sts <- dbExecute(conn = con, statement = read_file(file = "resources/ddl_clock_revision_taxonomables.sql"))
 
 # Pre-populate revision clock. Pre-pop is required because replays can originate from episodes before rebuild_start,
 # and not having an active episode in the revision clock will block adding a broadcast (FK-constraint).
 # The oldest replays required are NipperStudio replays (dating back 185 days). So no need to load more than the last 200 days.
-qry_txt <- read_file(file = "resources/backfill_clock_revision_entries_ep.sql")
-qry <- str_replace(qry_txt, "[$]#date", fmt_ts(rebuild_start - days(200)))
-dbExecute(con, qry)
-qry_txt <- read_file(file = "resources/backfill_clock_revision_entries_bc.sql")
-qry <- str_replace(qry_txt, "[$]#date", fmt_ts(rebuild_start - days(200)))
-dbExecute(con, qry)
+sql_sts <- dbExecute(conn = con, statement = read_file("resources/backfill_clock_revision_entries_ep.sql"), 
+                                    params = list(rebuild_start13_utc - days(200), rebuild_start13_utc))
+sql_sts <- dbExecute(conn = con, statement = read_file("resources/backfill_clock_revision_entries_bc.sql"), 
+                                    params = list(rebuild_start13_utc - days(200), rebuild_start13_utc))
 
 # > Main Control Loop ----
 repeat {
@@ -177,7 +135,7 @@ repeat {
     mutate(block = 5L)
   
   # build a clock ----
-  bc_week_ts <- tibble(ts = seq(from = rebuild_start, to = max(clock_set_db$bc_start), by = "hour"))
+  bc_week_ts <- tibble(ts = seq(from = rebuild_start13, to = max(prod_clock_set_db$bc_start), by = "hour"))
   
   df_calendar <- add_bc_cols(bc_week_ts, ts) |> 
     mutate(cycle = if_else(bc_day_label == "do" & bc_hour_start == 13, week_label(ts), NA_character_)) |> 
@@ -358,12 +316,10 @@ repeat {
   }
   
   # > add replays to database ----
-  # . - fetch current clock history ----
-  his_stop_ts <- rebuild_start
-  source("R/backfill-episode-chains.R", encoding = "UTF-8")
-  # df_clock_cz.1 <- df_clock_cz_cur.6 |> bind_rows(df_clock_cz_his) |> arrange(slot)
+  # . - load episode chains ----
+  his_stop_ts <- rebuild_start13
+  source("R/load-episode-chains.R", encoding = "UTF-8")
   
-  # . prep episode chains ----
   df_chains <- df_clock_cz_cur.6 |> bind_rows(df_clock_cz_his) |> 
     filter(!is_replay) |> select(episode_chain, slot, episode_entry_id) |> 
     arrange(episode_chain, desc(slot)) |> distinct()
@@ -423,6 +379,30 @@ repeat {
     flog.error("no replays to add, quiting this job", name = "clof")
     break
   }
+  
+  # find the diffs ----
+  clock_diffs <- df_clock_cz_cur.7 |> left_join(prod_clock_set_db, by = join_by(slot == bc_start)) |> 
+    select(slot, 
+           prod_title = bc_name, prod_ep_has_content = ep_has_content, prod_replay_bc_id = bc_rp_source_id, prod_ep_id = ep_id,
+           rev_title = titel_NL, rev_is_replay = is_replay, rev_ep_id = episode_entry_id) |> 
+    filter(prod_title != rev_title) 
+  
+  # update replays in db ----
+  clock_diffs_update <- clock_diffs |>
+    filter(!is.na(prod_replay_bc_id)) |>
+    transmute(
+      entry_id = prod_replay_bc_id,
+      new_parent_id = rev_ep_id
+    )
+  
+  dbWriteTable(con, name = "clock_diffs_update", value = clock_diffs_update, temporary = TRUE, overwrite = TRUE)
+  
+  dbExecute(con, "UPDATE entries AS e
+                  JOIN clock_diffs_update AS c
+                    ON c.entry_id = e.id
+                  SET e.parent_id = c.new_parent_id")
+  
+  dbExecute(con, "DROP TEMPORARY TABLE IF EXISTS clock_diffs_update")
   
   # Exit from MCL
   break

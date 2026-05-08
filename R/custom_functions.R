@@ -579,3 +579,18 @@ start_of_week <- function(pm_slot) {
                hours(13)
   if_else(candidate <= pm_slot, candidate, candidate - days(7))
 }
+
+ask_rebuild_date <- function() {
+  if (
+    requireNamespace("rstudioapi", quietly = TRUE) &&
+    rstudioapi::isAvailable()
+  ) {
+    rstudioapi::showPrompt(
+      title = "Rebuild start date",
+      message = "Rebuild from where? (yyyy-mm-dd)",
+      default = as.character(Sys.Date())
+    )
+  } else {
+    readline("Rebuild from where? (yyyy-mm-dd) ")
+  }
+}

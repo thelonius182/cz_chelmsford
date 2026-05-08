@@ -36,7 +36,7 @@ WITH selected_broadcasts AS (
   WHERE type = 'broadcast'
     AND deleted_at IS NULL
     AND site_id = 1
-    AND dates->>'$.start' >= '$#date'
+    AND dates->>'$.start' >= ? AND dates->>'$.start' < ?
 )
 SELECT 
   e.`id`,

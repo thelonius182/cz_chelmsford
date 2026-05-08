@@ -109,3 +109,6 @@ jobs <- tibble(id = 1:5,
 
 planned_jobs <- jobs |> filter(latest_completed_step < STEP$PLAYOUT) |> 
   left_join(step_lookup, by = join_by(latest_completed_step == step))
+
+prod_clkset <- dbGetQuery(conn = con, statement = read_file("resources/load-production-clockset.sql"), 
+                          params = list(force_tz(rebuild_start13, tzone = "UTC")))
