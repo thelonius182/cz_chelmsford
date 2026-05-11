@@ -594,3 +594,40 @@ ask_rebuild_date <- function() {
     readline("Rebuild from where? (yyyy-mm-dd) ")
   }
 }
+
+check_circular_sequence <- function(x) {
+  days <- c(ma = 0, di = 1, wo = 2, do = 3, vr = 4, za = 5, zo = 6)
+  week_minutes <- 7 * 24 * 60
+  
+  x |>
+    mutate(
+      row = row_number(),
+      day = str_sub(slot_key, 1, 2),
+      hour = as.integer(str_sub(slot_key, 3, 4)),
+      minute_of_week = unname(days[day]) * 24 * 60 + hour * 60,
+      
+      next_slot_key = lead(slot_key, default = first(slot_key)),
+      actual_next_minute = lead(minute_of_week, default = first(minute_of_week)),
+      
+      expected_next_minute = (minute_of_week + slot_minutes) %% week_minutes,
+      
+      problem = case_when(
+        is.na(days[day]) ~ "invalid Dutch weekday",
+        is.na(hour) | hour < 0 | hour > 23 ~ "invalid hour",
+        is.na(slot_minutes) | slot_minutes <= 0 ~ "invalid duration",
+        actual_next_minute != expected_next_minute ~
+          "gap, overlap, wrong slot_minutes, wrong slot_key, or wrong row order",
+        TRUE ~ NA_character_
+      )
+    ) |>
+    filter(!is.na(problem)) |>
+    select(
+      row,
+      slot_key,
+      slot_minutes,
+      next_slot_key,
+      expected_next_minute,
+      actual_next_minute,
+      problem
+    )
+}
