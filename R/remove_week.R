@@ -1,62 +1,31 @@
 # - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
 # remove all rows from week
 # - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
+begin_ts <- force_tz(ymd_hms("2026-06-11 12:50:00", quiet = T), tzone = "Europe/Amsterdam")
+end_ts <- begin_ts + days(7L)
 
-begin_ts <- force_tz(ymd_hms("2026-06-04 13:00:00", quiet = T), tzone = "Europe/Amsterdam")
-end_ts  <- begin_ts + days(7L) - minutes(10L)
+# load SQL
+sql <- read_file("resources/remove_week.sql")
 
-sql_result <- dbExecute(con, "DROP TEMPORARY TABLE IF EXISTS to_delete")
+# split statements
+statements <- sql |>
+  str_split(";") |>
+  pluck(1) |>
+  str_trim() |>
+  discard(\(x) x == "")
 
-# prep episode id's ----
-sql_stmt <- glue_sql("
-  CREATE TEMPORARY TABLE to_delete (
-    id char(36) CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci PRIMARY KEY
-  ) ENGINE = MEMORY
-  AS
-  select distinct e.id
-  from entries e join entries b on b.parent_id = e.id
-                               and b.type = 'broadcast'
-                               and b.deleted_at is null
-  where e.type = 'episode'
-    and e.deleted_at is null
-    and b.dates->>'$.start' between {fmt_ts(begin_ts)} and {fmt_ts(end_ts)};", .con = con)
-n_to_delete <- dbExecute(con, sql_stmt)
+# get query definition that needs variable binding
+bind_stmt <- which(str_detect(statements, "--\\s*@bind:\\s*insert_values"))
 
-if (n_to_delete == 0) stop("no rows to delete")
-
-persist_now <- with_tz(now(), "UTC")
-flog.info(str_glue("Removing {fmt_ts(begin_ts)}, generic 'deleted_at' = {logfmt_ts(persist_now)}"), name = "clof")
-
-# start transaction
-dbBegin(con)
-
-tryCatch({
-  # remove taxonomables ----
-  # no delete flag in this table
-  sql_result <- dbExecute(con, "delete FROM taxonomables where taxonomable_id in (select id from to_delete)")
-  
-  # hide broadcasts ----
-  sql_stmt <- glue_sql("
-     update entries set deleted_at = {fmt_ts(persist_now)}
-     where deleted_at is null
-       and type = 'broadcast'
-       and site_id = 1
-       and parent_id in (select id from to_delete)", .con = con)
-  sql_result <- dbExecute(con, sql_stmt)
-  
-  # hide episodes ----
-  sql_stmt <- glue_sql("
-     update entries set deleted_at = {fmt_ts(persist_now)}
-     where deleted_at is null
-       and type = 'episode'
-       and site_id = 1
-       and id in (select id from to_delete);", .con = con)
-  sql_result <- dbExecute(con, sql_stmt)
-  
-  dbCommit(con)
-}, error = function(e) {
-  dbRollback(con)
-  stop(e)
+# execute
+walk(seq_along(statements), \(i) {
+  if (i == bind_stmt) {
+    dbExecute(
+      con,
+      statements[[i]],
+      params = list(fmt_ts(begin_ts), fmt_ts(end_ts))
+    )
+  } else {
+    dbExecute(con, statements[[i]])
+  }
 })
-
-sql_result <- dbExecute(con, "DROP TEMPORARY TABLE to_delete")

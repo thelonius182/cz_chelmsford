@@ -284,11 +284,12 @@ repeat {
   # . add diff ep's + broadcasts ----
   # these are the episodes and broadcasts missing in prod-db, both fresh and replay
   ep_bc_to_add <- df_clock_cz_cur.6 |> filter(!is.na(slot_key)) |> 
-    select(slot:pgm_id)
+    select(slot:pgm_id) |> 
+    mutate(episode_entry_id = NA_character_)
   
   # . get episode chains ----
   chain_env <- new.env(parent = globalenv())
-  chain_env$max_ts_to_load <- max_ts_to_load
+  chain_env$max_ts_to_load <- rebuild_start13
   chain_env$con <- con
   source("R/load-episode-chains.R", local = chain_env)
   episode_chains <- chain_env$episode_chains

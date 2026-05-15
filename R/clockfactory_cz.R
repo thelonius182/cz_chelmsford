@@ -67,7 +67,8 @@ repeat {
   mk_weekly <- df_clockprofile_cz_raw |> filter(!is.na(wekelijks)) |> select(1:6) |> 
     rename(catalg_key = wekelijks, prod_type = te)
   mk_biweekly<- df_clockprofile_cz_raw |> filter(!is.na(`twee-wekelijks`)) |> select(1:3, 9:11) |> 
-    rename(catalg_key = `twee-wekelijks`) |> pivot_longer(cols = c(A, B), names_to = "cycle", values_to = "prod_type")
+    rename(catalg_key = `twee-wekelijks`) |> 
+    pivot_longer(cols = c(A, B), names_to = "cycle", values_to = "prod_type")
   mk_week.1 <- df_clockprofile_cz_raw |> filter(!is.na(`week 1`)) |> select(1:4, catalg_key = `week 1`, prod_type = t1) |> 
     mutate(block = 1L)
   mk_week.2 <- df_clockprofile_cz_raw |> filter(!is.na(`week 2`)) |> select(1:4, catalg_key = `week 2`, prod_type = t2) |> 
@@ -84,7 +85,8 @@ repeat {
   
   df_calendar <- add_bc_cols(bc_week_ts, ts) |> 
     mutate(cycle = if_else(bc_day_label == "do" & bc_hour_start == 13, week_label(ts), NA_character_)) |> 
-    fill(cycle, .direction = "down") |> select(slot = ts, slot_key, block = bc_week_of_month, cycle)
+    fill(cycle, .direction = "down") |> 
+    select(slot = ts, slot_key, block = bc_week_of_month, cycle)
   
   df_clock_cz_weekly <- df_calendar |> inner_join(mk_weekly, by = join_by(slot_key))
   
