@@ -7,7 +7,8 @@ pacman::p_load(tidyr, dplyr, stringr, readr, lubridate, fs, futile.logger, readx
                purrr, httr, jsonlite, yaml, ssh, googledrive, openxlsx, glue, uuid, RMariaDB)
 
 config <- read_yaml("config.yaml")
-apf <- flog.appender(appender.file(config$log_appender_file_cz), "clof")
+log_slug <- "clof"
+apf <- flog.appender(appender.file(config$log_appender_file_cz), log_slug)
 source("R/custom_functions.R", encoding = "UTF-8")
 
 # Where to start rebuilding?
@@ -32,14 +33,13 @@ if (is.na(rebuild_start)) {
   stop("invalid date")
 }
 
-flog.info("\n = = = = = =  Rebuilding program clock CZ = = = = = =", name = "clof")
+flog.info("\n = = = = = =  Rebuilding program clock CZ = = = = = =", name = log_slug)
 
 TZ_AM <- "Europe/Amsterdam"
 SITE <- list(CONCERTZENDER = 1L, WORLD_OF_JAZZ = 2L)
 BUILD_TYPE <- list(PROD = 1L, REV  = 2L)
 DAYS_OF_WEEK <- list(MONDAY = 1L, THURSDAY = 4L)
 fmt_ts <- stamp("1958-12-25 13:00:00", quiet = T, orders = "ymd HMS")
-cur_build_type <- BUILD_TYPE$REV
 
 # connect to CPNM-database ----
 source("R/cpnm_db_setup.R", encoding = "UTF-8")
@@ -56,7 +56,7 @@ prod_clock_set_db <- prod_clock_set_db_raw |>
 
 # > Main Control Loop ----
 repeat {
-  flog.info(str_glue("Start = Thursday {fmt_ts(rebuild_start13)}"), name = "clof")
+  flog.info(str_glue("Start = Thursday {fmt_ts(rebuild_start13)}"), name = log_slug)
   
   # . trigger GD-auth
   with_drive_quiet(
@@ -95,7 +95,7 @@ repeat {
   # validate slot/minutes columns in profile
   ccs <- check_circular_sequence(df_clockprofile_cz_raw |> select(slot_key, slot_minutes))
   if (nrow(ccs) > 0) {
-    flog.error("clock profile has errors in slot/minutes columns; quiting this job.", name = "clof")
+    flog.error("clock profile has errors in slot/minutes columns; quiting this job.", name = log_slug)
     break
   }
   
@@ -145,14 +145,14 @@ repeat {
   missing <- df_clock_cz_cur |> filter(is.na(titel_NL)) |> nrow()
   
   if (missing > 0) {
-    flog.error("clock catalogue is incomplete (title); quiting this job.", name = "clof")
+    flog.error("clock catalogue is incomplete (title); quiting this job.", name = log_slug)
     break
   }
   
   missing <- df_clock_cz_cur |> filter(is.na(episode_chain)) |> nrow()
   
   if (missing > 0) {
-    flog.error("clock catalogue is incomplete (episode chain); quiting this job.", name = "clof")
+    flog.error("clock catalogue is incomplete (episode chain); quiting this job.", name = log_slug)
     break
   }
   
@@ -171,7 +171,7 @@ repeat {
   missing <- df_clock_cz_cur.1 |> filter(is.na(ty_genre_id)) |> nrow()
   
   if (missing > 0) {
-    flog.error("genres missing in the taxonomy; quiting this job.", name = "clof")
+    flog.error("genres missing in the taxonomy; quiting this job.", name = log_slug)
     break
   }
   
@@ -192,7 +192,7 @@ repeat {
   missing <- df_clock_cz_cur.2 |> filter(is.na(ty_editor_id)) |> select(redacteurs) |> distinct() |> nrow()
   
   if (missing > 0) {
-    flog.error("editors missing in the taxonomy; quiting this job.", name = "clof")
+    flog.error("editors missing in the taxonomy; quiting this job.", name = log_slug)
     break
   }
   
@@ -214,7 +214,7 @@ repeat {
   missing <- df_afb |> filter(is.na(image_id)) |> nrow()
   
   if (missing > 0) {
-    flog.error("images are incomplete; quiting this job.", name = "clof")
+    flog.error("images are incomplete; quiting this job.", name = log_slug)
     break
   }
   
@@ -252,13 +252,60 @@ repeat {
   
   # . check complete ----
   if (missing > 0) {
-    flog.error("programs missing in 'entries'; quiting this job.", name = "clof")
+    flog.error("programs missing in 'entries'; quiting this job.", name = log_slug)
     break
   }
 
-  # combine prod/rev ----
-  df_clock_cz_cur.5 <- df_clock_cz_cur.4 |> left_join(prod_clock_set_db, by = join_by(slot == bc_start))
-  df_clock_cz_cur.6 <- df_clock_cz_cur.5 |> filter(titel_NL != bc_name | is.na(bc_name))
+  # combine rev/prod ----
+  df_clock_cz_cur.5 <- df_clock_cz_cur.4 |> full_join(prod_clock_set_db, by = join_by(slot == bc_start))
+  # get the diffs ----
+  df_clock_cz_cur.6 <- df_clock_cz_cur.5 |> filter(titel_NL != bc_name | is.na(slot_key) | is.na(bc_name))
+  
+  # . delete diff broadcasts ----
+  # these are bc's in prod-db no longer in revised clock
+  bc_to_delete <- df_clock_cz_cur.6 |> filter(!is.na(bc_id)) |> transmute(bc_id_delete = bc_id)
+  ts_now = now()
+  fmt_action_at = format(ts_now, tz = "UTC", usetz = FALSE)
+  
+  if (nrow(bc_to_delete) > 0) {
+    sql_sts <- dbExecute(con, "drop temporary table if exists bc_to_delete")
+    sql_sts <- dbExecute(con, "create temporary table bc_to_delete (
+                                 bc_id_delete char(36) character set utf8mb4 collate utf8mb4_unicode_ci)")
+    sql_sts <- dbAppendTable(con, "bc_to_delete", bc_to_delete)
+    sql_stmt <- glue_sql("update entries as e
+                          join bc_to_delete as c on c.bc_id_delete = e.id
+                          set e.deleted_at = {fmt_action_at}
+                          where e.type = 'broadcast'
+                            and e.deleted_at is null
+                            and e.site_id = 1;", .con = con)
+    sql_sts <- dbExecute(con, sql_stmt)
+  }
+  
+  # . add diff ep's + broadcasts ----
+  # these are the episodes and broadcasts missing in prod-db, both fresh and replay
+  ep_bc_to_add <- df_clock_cz_cur.6 |> filter(!is.na(slot_key)) |> 
+    select(slot:pgm_id)
+  
+  # . get episode chains ----
+  chain_env <- new.env(parent = globalenv())
+  chain_env$max_ts_to_load <- max_ts_to_load
+  chain_env$con <- con
+  source("R/load-episode-chains.R", local = chain_env)
+  episode_chains <- chain_env$episode_chains
+  
+  # . update cpnm database ----
+  upd_cpnm_env <- new.env(parent = globalenv())
+  upd_cpnm_env$tib_clock <- ep_bc_to_add
+  upd_cpnm_env$con <- con
+  upd_cpnm_env$episode_chains <- episode_chains
+  upd_cpnm_env$log_slug <- log_slug
+  upd_cpnm_env$cur_site <- SITE$CONCERTZENDER
+  upd_cpnm_env$TZ_AM <- TZ_AM
+  source("R/update_cpnm.R", local = upd_cpnm_env)
+  result <- upd_cpnm_env$result
+  n_new_episodes_fresh  = result$n_new_episodes_fresh
+  n_new_episodes_replay = result$n_new_episodes_replay
+  tib_clock_upd <- result$tib_clock_upd
   
   # Exit from MCL
   break
@@ -267,4 +314,4 @@ repeat {
 # Cleanup ----
 dbDisconnect(con)
 close_tunnel(tunnel)
-flog.info("job finished", name = "clof")
+flog.info("job finished", name = log_slug)

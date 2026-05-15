@@ -243,112 +243,129 @@ repeat {
     mutate(slot = ymd_hms(slot, tz = "Europe/Amsterdam", quiet = T))
   df_clock_cz_cur.5 <- df_clock_cz_cur.4 |> mutate(episode_entry_id = NA_character_) |> 
     select(1:5, is_replay, episode_entry_id, episode_chain, everything()) |> arrange(slot) |> 
-    rows_update(y = df_locked, by = "slot")
-  
-  # > add new to database ----
-  # do new ones first, to make sure that episodes replaying early, so this week, can be found
-  df_new_episodes_fresh <- df_clock_cz_cur.5 |> filter(!is_replay & is.na(episode_entry_id)) |> 
     # don't override existing slots
-    anti_join(df_locked, by = join_by(slot))
+    anti_join(df_locked, by = join_by(slot)) |> 
+    rows_update(df_locked, by = "slot") 
   
-  # prepped value for creation date the way the database stores it: with timezone UTC
-  ts_now = now()
-  fmt_created_at = format(ts_now, tz = "UTC", usetz = FALSE)
+  # . get episode chains ----
+  chain_env <- new.env(parent = globalenv())
+  chain_env$max_ts_to_load <- max_ts_to_load
+  chain_env$con <- con
+  source("R/load-episode-chains.R", local = chain_env)
+  episode_chains <- chain_env$df_episode_chains
   
-  if (nrow(df_new_episodes_fresh) > 0) {
-    flog.info(str_glue("adding fresh clock items to database, using `created_at` = {fmt_created_at} UTC"), name = "clof")
-    
-    # insert everything with identical `created_at` timestamps, making it a set
-    func_result <- clock2db(pm_clock_tib = df_new_episodes_fresh, 
-                            pm_created_at = ts_now, 
-                            pm_site = SITE$CONCERTZENDER, 
-                            pm_build_type = "PRD",
-                            pm_db = con)
-    
-    # . update clock tibble rows ----
-    qry <- glue_sql(
-      "select cast(b.dates->>'$.start' as datetime) as slot,
-       e.id as episode_entry_id
-     from entries b join entries e on e.id = b.parent_id
-                                  and e.deleted_at is null
-                                  and e.type = 'episode'
-     where b.deleted_at is null
-       and b.type = 'broadcast'
-       and b.site_id = 1
-       and b.created_at = {fmt_created_at}
-     order by 1;", .con = con)
-    db_new_items <- dbGetQuery(con, qry) |> mutate(slot = force_tz(slot, tzone = tz_am))
-    df_clock_cz_cur.6 <- df_clock_cz_cur.5 |> rows_update(db_new_items, by = "slot")
-  } else {
-    flog.error("no fresh clock items found, quiting this job", name = "clof")
-    break
-  }
+  # . update cpnm database ----
+  upd_cpnm_env <- new.env(parent = globalenv())
+  upd_cpnm_env$tib_clock <- df_clock_cz_cur.5
+  upd_cpnm_env$con <- con
+  upd_cpnm_env$episode_chains <- episode_chains
+  upd_cpnm_env$log_slug <- log_slug
+  upd_cpnm_env$cur_site <- SITE$CONCERTZENDER
+  upd_cpnm_env$TZ_AM <- TZ_AM
+  source("R/update_cpnm.R", local = upd_cpnm_env)
+  result <- upd_cpnm_env$result
+  n_new_episodes_fresh  = result$n_new_episodes_fresh
+  n_new_episodes_replay = result$n_new_episodes_replay
+  tib_clock_upd <- result$tib_clock_upd
   
-  # > add replays to database ----
-  # . - fetch current clock history ----
-  his_stop_ts <- start_ts
-  source("R/backfill-episode-chains.R", encoding = "UTF-8")
-  
-  # . prep episode chains ----
-  df_chains <- df_clock_cz_cur.6 |> bind_rows(df_clock_cz_his) |> 
-    filter(!is_replay) |> select(episode_chain, slot, episode_entry_id) |> 
-    arrange(episode_chain, desc(slot)) |> distinct()
-  
-  # . prep replays ----
-  df_new_episodes_replay <- df_clock_cz_cur.6 |> select(-genre, -ty_genre_id) |> distinct() |> 
-    filter(is_replay & is.na(episode_entry_id)) |> anti_join(df_locked, by = join_by(slot))
-  
-  # . lookup replays ----
-  n <- nrow(df_new_episodes_replay)
-  
-  if (n > 0) {
-    flog.info("adding replays to database, same `created_at`", name = "clof")
-    
-    # prep vectors for tibble used later in 'update the clock'
-    slot <- df_new_episodes_replay$slot
-    episode_entry_id <- character(n)
-  
-    for (rn in seq_len(n)) {
-      episode_entry_id[rn] <- lookup_replay(pm_chains = df_chains,
-                                            pm_cur_chain = df_new_episodes_replay$episode_chain[rn],
-                                            pm_replay_target_slot = df_new_episodes_replay$slot[rn],
-                                            pm_bc_type = df_new_episodes_replay$uitzendtype[rn],
-                                            pm_nipperstudio = df_new_episodes_replay$nipper_mogelijk[rn],
-                                            pm_start_of_week = start_ts)
-      # log as "not found"
-      if (episode_entry_id[rn] == "NOT-FOUND") {
-        v1 <- df_new_episodes_replay$titel_NL[rn]
-        v2 <- df_new_episodes_replay$slot[rn]
-        v3 = df_new_episodes_replay$episode_chain[rn]
-        flog.error(str_glue("no replay found for {v1}, target slot {v2}, of chain {v3}"), name = "clof")
-      } else {
-        # add broadcast to the episode to be replayed
-        ins_result <- cpnm_bc_ins(pm_pgm_id = df_new_episodes_replay$pgm_id[rn],
-                                  pm_epi_id = episode_entry_id[rn],
-                                  pm_site_id = SITE$CONCERTZENDER,
-                                  pm_bc_start = df_new_episodes_replay$slot[rn],
-                                  pm_bc_minutes = df_new_episodes_replay$slot_minutes[rn],
-                                  pm_created_at = ts_now,
-                                  pm_cpnm_db = con)
-      }
-    }
-    
-    # . update the clock ----
-    replay_updates <- tibble(slot = slot, episode_entry_id = episode_entry_id) |>
-      left_join(df_chains, by = join_by(episode_entry_id)) |>
-      select(slot = slot.x, episode_entry_id, replay_source_slot = slot.y)
-
-    dummy_replay_slot <- ymd_hms("1958-12-25 13:00:00", tz = tz_am, quiet = T)
-    df_clock_cz_cur.7 <- df_clock_cz_cur.6 |>
-      mutate(replay_source_slot = if_else(is_replay, dummy_replay_slot, NA_POSIXct_)) |>
-      rows_update(replay_updates, by = "slot") |>
-      select(1:6, replay_source_slot, everything())
-    
-  } else {
-    flog.error("no replays to add, quiting this job", name = "clof")
-    break
-  }
-  
+  # 
+  # # > add new to database ----
+  # # do new ones first, to make sure that episodes replaying early, so this week, can be found
+  # df_new_episodes_fresh <- df_clock_cz_cur.5 |> filter(!is_replay & is.na(episode_entry_id)) 
+  # 
+  # # format creation date the way the database expects it: with timezone UTC
+  # ts_now = now()
+  # fmt_created_at = format(ts_now, tz = "UTC", usetz = FALSE)
+  # 
+  # if (nrow(df_new_episodes_fresh) > 0) {
+  #   flog.info(str_glue("adding fresh clock items to database, using `created_at` = {fmt_created_at} UTC"), name = "clof")
+  #   
+  #   # use identical `created_at` timestamps for all rows, making it easy to select them as a set
+  #   func_result <- clock2db(pm_clock_tib = df_new_episodes_fresh, 
+  #                           pm_created_at = ts_now, 
+  #                           pm_site = SITE$CONCERTZENDER, 
+  #                           pm_db = con)
+  #   
+  #   # . update clock tibble rows ----
+  #   qry <- glue_sql(
+  #     "select cast(b.dates->>'$.start' as datetime) as slot,
+  #      e.id as episode_entry_id
+  #    from entries b join entries e on e.id = b.parent_id
+  #                                 and e.deleted_at is null
+  #                                 and e.type = 'episode'
+  #    where b.deleted_at is null
+  #      and b.type = 'broadcast'
+  #      and b.site_id = 1
+  #      and b.created_at = {fmt_created_at}
+  #    order by 1;", .con = con)
+  #   db_new_items <- dbGetQuery(con, qry) |> mutate(slot = force_tz(slot, tzone = tz_am))
+  #   df_clock_cz_cur.6 <- df_clock_cz_cur.5 |> rows_update(db_new_items, by = "slot")
+  # } else {
+  #   flog.error("no fresh clock items found, quiting this job", name = "clof")
+  #   break
+  # }
+  # 
+  # # > add replays to database ----
+  # # . prep episode chains ----
+  # df_chains <- df_clock_cz_cur.6 |> bind_rows(episode_chains) |> 
+  #   filter(!is_replay) |> select(episode_chain, slot, episode_entry_id) |> 
+  #   arrange(episode_chain, desc(slot)) |> distinct()
+  # 
+  # # . prep replays ----
+  # df_new_episodes_replay <- df_clock_cz_cur.6 |> select(-genre, -ty_genre_id) |> distinct() |> 
+  #   filter(is_replay & is.na(episode_entry_id)) |> anti_join(df_locked, by = join_by(slot))
+  # 
+  # # . lookup replays ----
+  # n <- nrow(df_new_episodes_replay)
+  # 
+  # if (n > 0) {
+  #   flog.info("adding replays to database, same `created_at`", name = "clof")
+  #   
+  #   # prep vectors for tibble used later in 'update the clock'
+  #   slot <- df_new_episodes_replay$slot
+  #   episode_entry_id <- character(n)
+  # 
+  #   for (rn in seq_len(n)) {
+  #     episode_entry_id[rn] <- lookup_replay(pm_chains = df_chains,
+  #                                           pm_cur_chain = df_new_episodes_replay$episode_chain[rn],
+  #                                           pm_replay_target_slot = df_new_episodes_replay$slot[rn],
+  #                                           pm_bc_type = df_new_episodes_replay$uitzendtype[rn],
+  #                                           pm_nipperstudio = df_new_episodes_replay$nipper_mogelijk[rn],
+  #                                           pm_start_of_week = start_ts)
+  #     # log as "not found"
+  #     if (episode_entry_id[rn] == "NOT FOUND") {
+  #       v1 <- df_new_episodes_replay$titel_NL[rn]
+  #       v2 <- df_new_episodes_replay$slot[rn]
+  #       v3 = df_new_episodes_replay$episode_chain[rn]
+  #       flog.error(str_glue("no replay found for {v1}, target slot {v2}, of chain {v3}"), name = "clof")
+  #     } else {
+  #       # add broadcast to the episode to be replayed
+  #       ins_result <- cpnm_bc_ins(pm_pgm_id = df_new_episodes_replay$pgm_id[rn],
+  #                                 pm_epi_id = episode_entry_id[rn],
+  #                                 pm_site_id = SITE$CONCERTZENDER,
+  #                                 pm_bc_start = df_new_episodes_replay$slot[rn],
+  #                                 pm_bc_minutes = df_new_episodes_replay$slot_minutes[rn],
+  #                                 pm_created_at = ts_now,
+  #                                 pm_cpnm_db = con)
+  #     }
+  #   }
+  #   
+  #   # . update the clock ----
+  #   replay_updates <- tibble(slot = slot, episode_entry_id = episode_entry_id) |>
+  #     left_join(df_chains, by = join_by(episode_entry_id)) |>
+  #     select(slot = slot.x, episode_entry_id, replay_source_slot = slot.y)
+  # 
+  #   dummy_replay_slot <- ymd_hms("1958-12-25 13:00:00", tz = tz_am, quiet = T)
+  #   df_clock_cz_cur.7 <- df_clock_cz_cur.6 |>
+  #     mutate(replay_source_slot = if_else(is_replay, dummy_replay_slot, NA_POSIXct_)) |>
+  #     rows_update(replay_updates, by = "slot") |>
+  #     select(1:6, replay_source_slot, everything())
+  #   
+  # } else {
+  #   flog.error("no replays to add, quiting this job", name = "clof")
+  #   break
+  # }
+  # 
   # . check completeness ----
   fmt_start_ts_m10 = fmt_ts(start_ts - minutes(10L))
   fmt_stop_ts_m10 = fmt_ts(stop_ts - minutes(10L))

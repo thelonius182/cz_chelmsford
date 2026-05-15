@@ -60,7 +60,7 @@ start_of_cz_week <- function(pm_cpnm_db) {
 	                  and site_id = 1 
                     and deleted_at is null
                     and dates->>'$.start' regexp '13:00:00$'
-                    and weekday(dates->>'$.start') = 3 -- 3=Thursday 
+                    and weekday(dates->>'$.start') = 3 -- 3=Thursday (SQL-code!)
                   order by 1 desc
                   limit 1
                )
@@ -152,7 +152,6 @@ cpnm_epi_bc_ins <- function(pm_pgm_id,
                             pm_bc_start,
                             pm_bc_minutes,
                             pm_created_at,
-                            pm_ent_tbl,
                             pm_cpnm_db) {
   
   # always get program name from PRD-table 'entries'!
@@ -164,7 +163,7 @@ cpnm_epi_bc_ins <- function(pm_pgm_id,
   bc_seconds <- 60 * pm_bc_minutes
   pm_now <- format(pm_created_at, tz = "UTC", usetz = FALSE)
   sql_stmt <- glue_sql("
-      INSERT INTO {`pm_ent_tbl`} (id,
+      INSERT INTO entries (id,
                            type,
                            title,
                            slug,
@@ -195,7 +194,7 @@ cpnm_epi_bc_ins <- function(pm_pgm_id,
   fmt_start_ts = fmt_ts(pm_bc_start)
   fmt_stop_ts = fmt_ts(pm_bc_start + minutes(pm_bc_minutes))
   sql_stmt <- glue_sql("
-      INSERT INTO {`pm_ent_tbl`} (id,
+      INSERT INTO entries (id,
                            type,
                            title,
                            slug,
@@ -228,7 +227,6 @@ cpnm_bc_ins <- function(pm_pgm_id,
                         pm_bc_start,
                         pm_bc_minutes,
                         pm_created_at,
-                        pm_build_type,
                         pm_cpnm_db) {
   sql_stmt <- glue_sql("select title, slug from entries where id = {pm_pgm_id};", .con = pm_cpnm_db)
   df_cur_pgm <- dbGetQuery(pm_cpnm_db, sql_stmt)
@@ -238,9 +236,8 @@ cpnm_bc_ins <- function(pm_pgm_id,
   fmt_start_ts = fmt_ts(pm_bc_start)
   fmt_stop_ts = fmt_ts(pm_bc_start + minutes(pm_bc_minutes))
   pm_now <- format(pm_created_at, tz = "UTC", usetz = FALSE)
-  ent_tbl <- if (pm_build_type == BUILD_TYPE$PROD) "entries" else "clock_revision_entries"
   sql_stmt <- glue_sql("
-      INSERT INTO {`ent_tbl`} (id,
+      INSERT INTO entries (id,
                            type,
                            title,
                            slug,
@@ -268,7 +265,6 @@ cpnm_bc_ins <- function(pm_pgm_id,
 cpnm_txb_edi_ins <- function(pm_epi_id,
                          pm_txy_id,
                          pm_role_NL,
-                         pm_txb_tbl,
                          pm_cpnm_db) {
   role_EN <- if (str_ends(pm_role_NL, pattern = "tatie")) {
     "Produced & presented by"
@@ -277,7 +273,7 @@ cpnm_txb_edi_ins <- function(pm_epi_id,
   }
   
   sql_stmt <- glue_sql("
-      INSERT INTO {`pm_txb_tbl`} (taxonomy_id,
+      INSERT INTO taxonomables (taxonomy_id,
                                 taxonomable_type,
                                 taxonomable_id,
                                 label)
@@ -294,10 +290,9 @@ cpnm_txb_edi_ins <- function(pm_epi_id,
 cpnm_txb_ins <- function(pm_epi_id,
                          pm_txy_id,
                          pm_order,
-                         pm_txb_tbl,
                          pm_cpnm_db) {
   sql_stmt <- glue_sql("
-      INSERT INTO {`pm_txb_tbl`} (taxonomy_id,
+      INSERT INTO taxonomables (taxonomy_id,
                                 taxonomable_type,
                                 taxonomable_id,
                                 `order`)
@@ -333,17 +328,13 @@ cpnm_img_get <- function(pm_img_id, pm_cpnm_db) {
   sql_res <- dbGetQuery(pm_cpnm_db, sql_stmt)
 }
 
-clock2db <- function(pm_clock_tib, pm_created_at, pm_site, pm_build_type, pm_db) {
+clock2db <- function(pm_clock_tib, pm_created_at, pm_site, pm_db) {
   
   # - some fresh programs have 2 main genres, so have 2 records; treat them separately: 'a' for all columns,
   #   and 'b' just for the extra genre
   cur_clock <- pm_clock_tib |> group_by(slot) |> mutate(tib_item = row_number()) |> ungroup()
   cur_clock_a <- cur_clock |> filter(tib_item == 1L)
   cur_clock_b <- cur_clock |> filter(tib_item == 2L)
-  
-  # assign correct table names
-  ent_tbl <- if (pm_build_type == BUILD_TYPE$PROD) "entries" else "clock_revision_entries"
-  txb_tbl <- if (pm_build_type == BUILD_TYPE$PROD) "taxonomables" else "clock_revision_taxonomables"
   
   for (rn in seq_len(nrow(cur_clock_a))) {
     
@@ -356,7 +347,6 @@ clock2db <- function(pm_clock_tib, pm_created_at, pm_site, pm_build_type, pm_db)
                                     pm_bc_start = cur_clock_a$slot[rn],
                                     pm_bc_minutes = cur_clock_a$slot_minutes[rn],
                                     pm_created_at,
-                                    pm_ent_tbl = ent_tbl,
                                     pm_cpnm_db = pm_db)
     
     # . genre ----
@@ -364,7 +354,6 @@ clock2db <- function(pm_clock_tib, pm_created_at, pm_site, pm_build_type, pm_db)
     txb_res <- cpnm_txb_ins(pm_epi_id = fresh_epi_bc,
                             pm_txy_id = cur_clock_a$ty_genre_id[rn],
                             pm_order = 1L,
-                            pm_txb_tbl = txb_tbl,
                             pm_cpnm_db = pm_db)
     
     # - add an `episode` taxonomable record for second genre
@@ -374,7 +363,6 @@ clock2db <- function(pm_clock_tib, pm_created_at, pm_site, pm_build_type, pm_db)
       txb_res <- cpnm_txb_ins(pm_epi_id = fresh_epi_bc,
                               pm_txy_id = df_g2$ty_genre_id,
                               pm_order = 2L,
-                              pm_txb_tbl = txb_tbl,
                               pm_cpnm_db = pm_db)
     }
     
@@ -383,7 +371,6 @@ clock2db <- function(pm_clock_tib, pm_created_at, pm_site, pm_build_type, pm_db)
     txb_res <- cpnm_txb_edi_ins(pm_epi_id = fresh_epi_bc,
                                 pm_txy_id = cur_clock_a$ty_editor_id[rn],
                                 pm_role_NL = cur_clock_a$productie[rn],
-                                pm_txb_tbl = txb_tbl,
                                 pm_cpnm_db = pm_db)
   }
 }
@@ -523,23 +510,23 @@ lookup_replay <- function(pm_chains,
   replay_candidates <- pm_chains |> filter(episode_chain == pm_cur_chain)
   
   replay_source <- if (nrow(replay_candidates) == 0) {
-    "NOT-FOUND"
+    "NOT FOUND"
   } else if (pm_bc_type == "live") {
     shortlist <- replay_candidates |> filter(slot < pm_start_of_week)
     
-    if (nrow(shortlist) == 0) "NOT-FOUND" else shortlist$episode_entry_id[1]
+    if (nrow(shortlist) == 0) "NOT FOUND" else shortlist$episode_entry_id[1]
     
   } else if (pm_nipperstudio != "N") {
     shortlist_nips.1 <- replay_candidates |> filter(slot <= pm_replay_target_slot - days(182L))
     shortlist_nips.2 <- replay_candidates |> filter(slot < pm_replay_target_slot)
     shortlist <- if (nrow(shortlist_nips.1) > 0) shortlist_nips.1 else shortlist_nips.2
     
-    if (nrow(shortlist) == 0) "NOT-FOUND" else shortlist$episode_entry_id[1]
+    if (nrow(shortlist) == 0) "NOT FOUND" else shortlist$episode_entry_id[1]
     
   } else {
     shortlist <- replay_candidates |> filter(slot < pm_replay_target_slot)
     
-    if (nrow(shortlist) == 0) "NOT-FOUND" else shortlist$episode_entry_id[1]
+    if (nrow(shortlist) == 0) "NOT FOUND" else shortlist$episode_entry_id[1]
   }
 }
 
@@ -612,7 +599,7 @@ check_circular_sequence <- function(x) {
       expected_next_minute = (minute_of_week + slot_minutes) %% week_minutes,
       
       problem = case_when(
-        is.na(days[day]) ~ "invalid Dutch weekday",
+        is.na(days[day]) ~ "invalid weekday abbreviation",
         is.na(hour) | hour < 0 | hour > 23 ~ "invalid hour",
         is.na(slot_minutes) | slot_minutes <= 0 ~ "invalid duration",
         actual_next_minute != expected_next_minute ~
