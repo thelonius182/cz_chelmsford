@@ -304,6 +304,18 @@ cpnm_txb_ins <- function(pm_epi_id,
   sql_res <- dbExecute(pm_cpnm_db, sql_stmt)
 }
 
+cpnm_cck_ins <- function(pm_epi_id,
+                         pm_cck,
+                         pm_cpnm_db) {
+  sql_stmt <- glue_sql("
+      INSERT INTO episode_catlg_keys (ep_id,
+                                      ep_catkey)
+      VALUES ({pm_epi_id},
+              {pm_cck}
+      );", .con = pm_cpnm_db)
+  sql_res <- dbExecute(pm_cpnm_db, sql_stmt)
+}
+
 cpnm_uni_get <- function(pm_pgm_id, pm_max_start, pm_cpnm_db) {
   sql_stmt <- glue_sql("select e.id as epi_id, 
                                b.dates->>'$.start' as epi_start 
@@ -374,10 +386,9 @@ clock2db <- function(pm_clock_tib, pm_created_at, pm_site, pm_db) {
                                 pm_cpnm_db = pm_db)
     
     # . catalogue key ----
-    txb_res <- cpnm_txb_ins(pm_epi_id = fresh_epi_bc,
-                                pm_txy_id = cur_clock_a$ty_editor_id[rn],
-                                pm_role_NL = cur_clock_a$productie[rn],
-                                pm_cpnm_db = pm_db)
+    cck_res <- cpnm_cck_ins(pm_epi_id = fresh_epi_bc,
+                            pm_cck = cur_clock_a$catalg_key[rn],
+                            pm_cpnm_db = pm_db)
   }
 }
 

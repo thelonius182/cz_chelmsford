@@ -265,6 +265,12 @@ repeat {
     # leave episodes untouched that already have editor content in the database
     filter(is.na(ep_has_content) | ep_has_content == "N")
   
+  # . no diffs ----
+  if (nrow(df_clock_cz_cur.6) == 0) {
+    flog.error("Nothing found to build or rebuild; quiting this job.", name = log_slug)
+    break
+  }
+  
   # . delete diff broadcasts ----
   # these are bc's in prod-db no longer in revised clock
   bc_to_delete <- df_clock_cz_cur.6 |> filter(!is.na(bc_id)) |> transmute(bc_id_delete = bc_id)
