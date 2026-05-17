@@ -19,15 +19,16 @@ new_episodes_fresh <- tib_clock |> filter(!is_replay & is.na(episode_entry_id))
 
 # format creation date the way the database expects it: as UTC
 ts_now = now()
+# ts_now = ymd_hms("2026-05-16 17:39:43")
+# use identical `created_at` timestamps for all rows, making it easy to select them as a set
 fmt_created_at = format(ts_now, tz = "UTC", usetz = FALSE)
 
 if (nrow(new_episodes_fresh) > 0) {
   flog.info(str_glue("adding fresh clock items to database, using `created_at` = {fmt_created_at} UTC"), name = log_slug)
   
-  # use identical `created_at` timestamps for all rows, making it easy to select them as a set
-  func_result <- clock2db(pm_clock_tib = new_episodes_fresh, 
-                          pm_created_at = ts_now, 
-                          pm_site = cur_site, 
+  func_result <- clock2db(pm_clock_tib = new_episodes_fresh,
+                          pm_created_at = ts_now,
+                          pm_site = cur_site,
                           pm_db = con)
   
   # . update clock tibble rows ----
@@ -49,7 +50,7 @@ if (nrow(new_episodes_fresh) > 0) {
 # > add replays to database ----
 # . prep episode chains ----
 episode_chains <- episode_chains |>
-  bind_rows(tib_clock, envir = upd_cpnm_env) |> 
+  bind_rows(tib_clock) |> 
   filter(!is_replay) |> 
   select(episode_chain, slot, episode_entry_id) |> 
   arrange(episode_chain, desc(slot)) |> 
@@ -68,18 +69,18 @@ if (n > 0) {
   flog.info("adding replays to database, same `created_at`", name = log_slug)
   
   # prep vectors for tibble used later in 'update the clock'
-  slot <- new_episodes_replay$slot
-  episode_entry_id <- character(n)
+  prep_slot <- new_episodes_replay$slot
+  prep_episode_entry_id <- character(n)
   
   for (rn in seq_len(n)) {
-    episode_entry_id[rn] <- lookup_replay(pm_chains = episode_chains.2,
-                                          pm_cur_chain = new_episodes_replay$episode_chain[rn],
-                                          pm_replay_target_slot = new_episodes_replay$slot[rn],
-                                          pm_bc_type = new_episodes_replay$uitzendtype[rn],
-                                          pm_nipperstudio = new_episodes_replay$nipper_mogelijk[rn],
-                                          pm_start_of_week = start_ts)
+    prep_episode_entry_id[rn] <- lookup_replay(pm_chains = episode_chains,
+                                               pm_cur_chain = new_episodes_replay$episode_chain[rn],
+                                               pm_replay_target_slot = new_episodes_replay$slot[rn],
+                                               pm_bc_type = new_episodes_replay$uitzendtype[rn],
+                                               pm_nipperstudio = new_episodes_replay$nipper_mogelijk[rn],
+                                               pm_start_of_week = start_of_week(new_episodes_replay$slot[rn]))
     # log as "not found"
-    if (episode_entry_id[rn] == "NOT FOUND") {
+    if (prep_episode_entry_id[rn] == "NOT FOUND") {
       v1 <- new_episodes_replay$titel_NL[rn]
       v2 <- new_episodes_replay$slot[rn]
       v3 = new_episodes_replay$episode_chain[rn]
@@ -97,13 +98,14 @@ if (n > 0) {
   }
   
   # . update the clock ----
-  replay_updates <- tibble(slot = slot, episode_entry_id = episode_entry_id) |>
-    left_join(episode_chains.2, by = join_by(episode_entry_id)) |>
-    select(slot = slot.x, episode_entry_id, replay_source_slot = slot.y)
+  replay_updates <- tibble(slot = prep_slot, episode_entry_id = prep_episode_entry_id) |>
+    left_join(episode_chains, by = join_by(episode_entry_id)) |>
+    select(slot, episode_entry_id, replay_source_slot = ec_slot)
   
-  dummy_replay_slot <- ymd_hms("1958-12-25 13:00:00", tz = TZ_AM, quiet = T)
+  # dummy_replay_slot <- ymd_hms("1958-12-25 13:00:00", tz = TZ_AM, quiet = T)
   tib_clock <- tib_clock |>
-    mutate(replay_source_slot = if_else(is_replay, dummy_replay_slot, NA_POSIXct_)) |>
+    # mutate(replay_source_slot = if_else(is_replay, dummy_replay_slot, NA_POSIXct_)) |>
+    mutate(replay_source_slot = NA_POSIXct_) |>
     rows_update(replay_updates, by = "slot") |>
     select(1:6, replay_source_slot, everything())
 }
@@ -111,5 +113,5 @@ if (n > 0) {
 result <- list(
   n_new_episodes_fresh = nrow(new_episodes_fresh),
   n_new_episodes_replay = nrow(new_episodes_replay),
-  tib_clock_upd <- tib_clock
+  tib_clock_upd = tib_clock
 )

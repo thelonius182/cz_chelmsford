@@ -257,9 +257,13 @@ repeat {
   }
 
   # combine rev/prod ----
-  df_clock_cz_cur.5 <- df_clock_cz_cur.4 |> full_join(prod_clock_set_db, by = join_by(slot == bc_start))
+  df_clock_cz_cur.5 <- df_clock_cz_cur.4 |> 
+    full_join(prod_clock_set_db, by = join_by(slot == bc_start))
   # get the diffs ----
-  df_clock_cz_cur.6 <- df_clock_cz_cur.5 |> filter(titel_NL != bc_name | is.na(slot_key) | is.na(bc_name))
+  df_clock_cz_cur.6 <- df_clock_cz_cur.5 |> 
+    filter(titel_NL != bc_name | is.na(slot_key) | is.na(bc_name)) |> 
+    # leave episodes untouched that already have editor content in the database
+    filter(is.na(ep_has_content) | ep_has_content == "N")
   
   # . delete diff broadcasts ----
   # these are bc's in prod-db no longer in revised clock
@@ -304,8 +308,8 @@ repeat {
   upd_cpnm_env$TZ_AM <- TZ_AM
   source("R/update_cpnm.R", local = upd_cpnm_env)
   result <- upd_cpnm_env$result
-  n_new_episodes_fresh  = result$n_new_episodes_fresh
-  n_new_episodes_replay = result$n_new_episodes_replay
+  n_new_episodes_fresh <- result$n_new_episodes_fresh
+  n_new_episodes_replay <- result$n_new_episodes_replay
   tib_clock_upd <- result$tib_clock_upd
   
   # Exit from MCL

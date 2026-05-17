@@ -80,4 +80,4 @@ episode_chains <- joined_slots_a |>
   bind_rows(joined_slots_b) |> 
   arrange(episode_chain, dttm_start) |> 
   mutate(is_replay = F) |> 
-  select(slot = dttm_start, slot_key, is_replay, episode_entry_id = id, episode_chain)
+  select(ec_slot = dttm_start, slot_key, is_replay, episode_entry_id = id, episode_chain)

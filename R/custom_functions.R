@@ -263,9 +263,9 @@ cpnm_bc_ins <- function(pm_pgm_id,
 }
 
 cpnm_txb_edi_ins <- function(pm_epi_id,
-                         pm_txy_id,
-                         pm_role_NL,
-                         pm_cpnm_db) {
+                             pm_txy_id,
+                             pm_role_NL,
+                             pm_cpnm_db) {
   role_EN <- if (str_ends(pm_role_NL, pattern = "tatie")) {
     "Produced & presented by"
   } else {
@@ -369,6 +369,12 @@ clock2db <- function(pm_clock_tib, pm_created_at, pm_site, pm_db) {
     # . editor ----
     # - add an `episode` taxonomable record for editors and production-role (txy-type colofon)
     txb_res <- cpnm_txb_edi_ins(pm_epi_id = fresh_epi_bc,
+                                pm_txy_id = cur_clock_a$ty_editor_id[rn],
+                                pm_role_NL = cur_clock_a$productie[rn],
+                                pm_cpnm_db = pm_db)
+    
+    # . catalogue key ----
+    txb_res <- cpnm_txb_ins(pm_epi_id = fresh_epi_bc,
                                 pm_txy_id = cur_clock_a$ty_editor_id[rn],
                                 pm_role_NL = cur_clock_a$productie[rn],
                                 pm_cpnm_db = pm_db)
