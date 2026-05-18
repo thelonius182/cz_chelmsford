@@ -529,19 +529,19 @@ lookup_replay <- function(pm_chains,
   replay_source <- if (nrow(replay_candidates) == 0) {
     "NOT FOUND"
   } else if (pm_bc_type == "live") {
-    shortlist <- replay_candidates |> filter(slot < pm_start_of_week)
+    shortlist <- replay_candidates |> filter(ec_slot < pm_start_of_week)
     
     if (nrow(shortlist) == 0) "NOT FOUND" else shortlist$episode_entry_id[1]
     
   } else if (pm_nipperstudio != "N") {
-    shortlist_nips.1 <- replay_candidates |> filter(slot <= pm_replay_target_slot - days(182L))
-    shortlist_nips.2 <- replay_candidates |> filter(slot < pm_replay_target_slot)
+    shortlist_nips.1 <- replay_candidates |> filter(ec_slot <= pm_replay_target_slot - days(182L))
+    shortlist_nips.2 <- replay_candidates |> filter(ec_slot < pm_replay_target_slot)
     shortlist <- if (nrow(shortlist_nips.1) > 0) shortlist_nips.1 else shortlist_nips.2
     
     if (nrow(shortlist) == 0) "NOT FOUND" else shortlist$episode_entry_id[1]
     
   } else {
-    shortlist <- replay_candidates |> filter(slot < pm_replay_target_slot)
+    shortlist <- replay_candidates |> filter(ec_slot < pm_replay_target_slot)
     
     if (nrow(shortlist) == 0) "NOT FOUND" else shortlist$episode_entry_id[1]
   }

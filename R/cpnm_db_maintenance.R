@@ -195,3 +195,6 @@ sav_tbl <- tibble(
   episode_entry_id = episode_entry_id
 )
 
+tib_episode_catlg_keys <- episode_chains |> inner_join(df_clockcatalogue, by = join_by(episode_chain)) |> 
+  select(ep_id = episode_entry_id, ep_catkey = catalg_key) 
+sql_sts <- dbAppendTable(conn = con, name = "episode_catlg_keys", value = tib_episode_catlg_keys)

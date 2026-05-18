@@ -22,46 +22,38 @@ clean_chains <- raw_chains |> filter(episode_chain != "#NONE#")
 
 # retrieve cpnm items ----
 qry <- "select id, 
-               parent_id, 
                type, 
                title_nl, 
                case when JSON_TYPE(JSON_EXTRACT(content, '$.nl.content')) = 'ARRAY'
                          AND JSON_LENGTH(JSON_EXTRACT(content, '$.nl.content')) > 0
-                    then 'Y' else 'N' end as has_content,
+                    then 'Y' else 'N' end as has_content
+        from entries
+        where deleted_at is null 
+          and type = 'episode';"
+db_cpnm_items_raw_epi <- dbGetQuery(con, qry) 
+
+qry <- "select parent_id, 
                cast(dates->>'$.start' as datetime) as dttm_start, 
                cast(dates->>'$.end'   as datetime) as dttm_stop
         from entries
         where deleted_at is null 
           and site_id = 1
-          and type in ('broadcast', 'episode');"
-db_cpnm_items_raw <- dbGetQuery(con, qry) 
-cpnm_items <- db_cpnm_items_raw |> mutate(dttm_start = force_tz(dttm_start, tzone = "Europe/Amsterdam"),
-                                          dttm_stop  = force_tz(dttm_stop,  tzone = "Europe/Amsterdam"),
-                                          title_nl = str_to_lower(title_nl),
-                                          title_nl = str_replace(title_nl, "&amp;", "&"),
-                                          dttm_start = if_else(type == "episode" & !is.na(dttm_start), NA_POSIXct_, dttm_start),
-                                          dttm_stop  = if_else(type == "episode" & !is.na(dttm_start), NA_POSIXct_, dttm_stop))
+          and type = 'broadcast';"
+db_cpnm_items_raw_bc <- dbGetQuery(con, qry) 
 
-# prep broadcasts ----
-cpnm_broadcasts <- cpnm_items |> 
-  filter(type == "broadcast" & dttm_start >= max_ts_to_load - days(200)) |> 
+cpnm_epi_bc <- db_cpnm_items_raw_epi |> inner_join(db_cpnm_items_raw_bc, by = join_by(id == parent_id)) |> 
+  mutate(across(where(~ inherits(.x, "POSIXct")), ~ force_tz(.x, tzone = "Europe/Amsterdam")),
+         title_nl = str_replace(title_nl, "&amp;", "&"),
+         title_nl = str_to_lower(title_nl)) |> 
+  filter(str_length(str_trim(title_nl, side = "both")) > 0  & dttm_start >= max_ts_to_load - days(200)) |> 
   add_bc_cols(ts_col = dttm_start) |> 
   mutate(slot_key = paste0(slot_key, "-", bc_week_of_month)) |> 
-  select(parent_id, dttm_start, dttm_stop, slot_key, title_nl) |> 
-  arrange(parent_id, dttm_start, slot_key) |> 
-  group_by(parent_id) |> mutate(rn = row_number()) |> ungroup() |> 
-  filter(rn == 1) |> select(-rn)
+  select(ep_id = id, dttm_start, dttm_stop, slot_key, title_nl, has_content) |> 
+  arrange(ep_id, dttm_start, slot_key) |> 
+  group_by(ep_id) |> mutate(rn = row_number()) |> ungroup() |> 
+  filter(rn == 1) |> 
+  select(-rn)
   
-# prep episodes ----
-cpnm_episodes <- cpnm_items |> 
-  filter(type == "episode") |> 
-  select(id, title_nl, has_content) |> 
-  arrange(title_nl)
-
-# combine bc+epi ----
-cpnm_epi_bc <- cpnm_episodes |> 
-  inner_join(cpnm_broadcasts, by = join_by(title_nl, id == parent_id))
-
 # split chain sets ----
 #   to simplify joining cpnm_epi_bc
 chains_a <- clean_chains |> 
@@ -80,4 +72,4 @@ episode_chains <- joined_slots_a |>
   bind_rows(joined_slots_b) |> 
   arrange(episode_chain, dttm_start) |> 
   mutate(is_replay = F) |> 
-  select(ec_slot = dttm_start, slot_key, is_replay, episode_entry_id = id, episode_chain)
+  select(slot = dttm_start, slot_key, is_replay, episode_entry_id = ep_id, episode_chain, has_content)

@@ -52,8 +52,8 @@ if (nrow(new_episodes_fresh) > 0) {
 episode_chains <- episode_chains |>
   bind_rows(tib_clock) |> 
   filter(!is_replay) |> 
-  select(episode_chain, slot, episode_entry_id) |> 
-  arrange(episode_chain, desc(slot)) |> 
+  select(episode_chain, ec_slot = slot, episode_entry_id) |> 
+  arrange(episode_chain, desc(ec_slot)) |> 
   distinct()
 
 # . prep replays ----
@@ -84,11 +84,12 @@ if (n > 0) {
       v1 <- new_episodes_replay$titel_NL[rn]
       v2 <- new_episodes_replay$slot[rn]
       v3 = new_episodes_replay$episode_chain[rn]
-      flog.error(str_glue("no replay found for {v1}, target slot {v2}, of chain {v3}"), name = log_slug)
+      v4 <- new_episodes_replay$slot_key[rn]
+      flog.error(str_glue("no replay found for {v4} = {v2}, chain {v3}, {v1}"), name = log_slug)
     } else {
       # add broadcast to the episode to be replayed
       ins_result <- cpnm_bc_ins(pm_pgm_id = new_episodes_replay$pgm_id[rn],
-                                pm_epi_id = episode_entry_id[rn],
+                                pm_epi_id = prep_episode_entry_id[rn],
                                 pm_site_id = cur_site,
                                 pm_bc_start = new_episodes_replay$slot[rn],
                                 pm_bc_minutes = new_episodes_replay$slot_minutes[rn],
@@ -105,7 +106,7 @@ if (n > 0) {
   # dummy_replay_slot <- ymd_hms("1958-12-25 13:00:00", tz = TZ_AM, quiet = T)
   tib_clock <- tib_clock |>
     # mutate(replay_source_slot = if_else(is_replay, dummy_replay_slot, NA_POSIXct_)) |>
-    mutate(replay_source_slot = NA_POSIXct_) |>
+    mutate(replay_source_slot = as.POSIXct(NA, tz = "Europe/Amsterdam")) |>
     rows_update(replay_updates, by = "slot") |>
     select(1:6, replay_source_slot, everything())
 }

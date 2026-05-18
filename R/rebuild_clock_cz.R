@@ -115,7 +115,9 @@ repeat {
     mutate(block = 5L)
   
   # build a clock ----
-  bc_week_ts <- tibble(ts = seq(from = rebuild_start13, to = max(prod_clock_set_db$bc_start), by = "hour"))
+  bc_week_to <- if (nrow(prod_clock_set_db) > 0) max(prod_clock_set_db$bc_start) else rebuild_start13 + days(7L) - minutes(10L)
+  
+  bc_week_ts <- tibble(ts = seq(from = rebuild_start13, to = bc_week_to, by = "hour"))
   
   df_calendar <- add_bc_cols(bc_week_ts, ts) |> 
     mutate(cycle = if_else(bc_day_label == "do" & bc_hour_start == 13, week_label(ts), NA_character_)) |> 
@@ -318,11 +320,20 @@ repeat {
   n_new_episodes_replay <- result$n_new_episodes_replay
   tib_clock_upd <- result$tib_clock_upd
   
+  # when a new week was built, check for gaps
+  begin_ts <- rebuild_start13 - minutes(10L)
+  end_ts <- begin_ts + days(7L)
+  week_gaps <- dbGetQuery(conn = con, statement = read_file("resources/check_for_gaps.sql"), 
+                          params = list(fmt_ts(begin_ts), fmt_ts(end_ts)))
+
+  if (nrow(week_gaps) > 0)
+  
   # Exit from MCL
   break
 }
 
+flog.info("job finished", name = log_slug)
+
 # Cleanup ----
 dbDisconnect(con)
 close_tunnel(tunnel)
-flog.info("job finished", name = log_slug)
