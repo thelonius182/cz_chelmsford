@@ -44,7 +44,7 @@ logfmt_ts <- function(x) {
   format(x, "%Y-%m-%d %H:%M:%S %Z")
 }
 
-# Infer the bi-weekly cycle (A or B) 
+# Infer the bi-weekly cycle (A or B); CZ only 
 # 'start_of_week' is expected to be Thursday 13:00
 week_label <- function(start_of_week) {
   ref_date_B_cycle <- ymd_hms("2019-10-17 13:00:00", tz = "Europe/Amsterdam", quiet = TRUE)
@@ -52,20 +52,25 @@ week_label <- function(start_of_week) {
   if_else(n_weeks %% 2 == 0, "B", "A")
 }
 
-start_of_cz_week <- function(pm_cpnm_db) {
-  sql_stmt <- "with thu_13h as (
-	                select dates->>'$.start' as start_ts
-	                from entries 
-	                where type = 'broadcast' 
-	                  and site_id = 1 
-                    and deleted_at is null
-                    and dates->>'$.start' regexp '13:00:00$'
-                    and weekday(dates->>'$.start') = 3 -- 3=Thursday (SQL-code!)
-                  order by 1 desc
-                  limit 1
-               )
-               select date(start_ts) + interval 7 day + interval 13 HOUR as next_week_start
-               from thu_13h;"
+new_week_start <- function(pm_site, pm_cpnm_db) {
+  new_week_start_hour <- case_when(pm_site == SITE$CONCERTZENDER ~ config$cz_weekstart_hour,
+                                   pm_site == SITE$WORLD_OF_JAZZ ~ config$wj_weekstart_hour,
+                                   TRUE ~ 0L)
+  nws_rgx <- paste0(new_week_start_hour, ":00:00$")
+  SQL_THURSDAY <- 3L
+  sql_stmt <- glue_sql("with thu_hh as (
+	                        select dates->>'$.start' as max_thursday
+	                        from entries 
+	                        where type = 'broadcast' 
+	                          and site_id = {pm_site}
+                            and deleted_at is null
+                            and dates->>'$.start' regexp {nws_rgx}
+                            and weekday(dates->>'$.start') = {SQL_THURSDAY}
+                          order by 1 desc
+                          limit 1
+                        )
+                        select date(max_thursday) + interval 7 DAY + interval {new_week_start_hour} HOUR as value
+                        from thu_hh;", .con = pm_cpnm_db)
   dbGetQuery(pm_cpnm_db, sql_stmt)
 }
 
@@ -522,14 +527,14 @@ lookup_replay <- function(pm_chains,
                           pm_replay_target_slot,
                           pm_bc_type,
                           pm_nipperstudio,
-                          pm_start_of_week) {
+                          pm_start_of_rp_week) {
   # prune current chain
   replay_candidates <- pm_chains |> filter(episode_chain == pm_cur_chain)
   
   replay_source <- if (nrow(replay_candidates) == 0) {
     "NOT FOUND"
   } else if (pm_bc_type == "live") {
-    shortlist <- replay_candidates |> filter(ec_slot < pm_start_of_week)
+    shortlist <- replay_candidates |> filter(ec_slot < pm_start_of_rp_week)
     
     if (nrow(shortlist) == 0) "NOT FOUND" else shortlist$episode_entry_id[1]
     
@@ -553,52 +558,50 @@ log_tibble <- function(x, label = deparse(substitute(x)), n = 20, width = 160) {
   flog.error("%s:\n%s", label, paste(txt, collapse = "\n"), name = "clof")
 }
 
-parse_rebuild_options <- function(args = commandArgs(trailingOnly = TRUE)) {
-  rebuild_options <- list(
-    make_option(
-      c("-d", "--date"),
-      type = "character",
-      default = NULL,
-      help = "'rebuild from'-date",
-      metavar = "character"
-    )
-  )
-  
-  opt_parser <- OptionParser(option_list = rebuild_options)
-  opts <- parse_args(opt_parser, args = args)
-  
-  if (is.null(opts$date)) {
-    stop(
-      "missing argument(s). Enter 'rebuild from'-date; use '-d' or --date'.",
-      call. = FALSE
-    )
-  }
-  
-  opts$date
-}
+# parse_rebuild_options <- function(args = commandArgs(trailingOnly = TRUE)) {
+#   rebuild_options <- list(
+#     make_option(
+#       c("-d", "--date"),
+#       type = "character",
+#       default = NULL,
+#       help = "'rebuild from'-date",
+#       metavar = "character"
+#     )
+#   )
+#   
+#   opt_parser <- OptionParser(option_list = rebuild_options)
+#   opts <- parse_args(opt_parser, args = args)
+#   
+#   if (is.null(opts$date)) {
+#     stop(
+#       "missing argument(s). Enter 'rebuild from'-date; use '-d' or --date'.",
+#       call. = FALSE
+#     )
+#   }
+#   
+#   opts$date
+# }
 
-start_of_week <- function(pm_slot) {
+# start of replay-week
+# uses R-convention for DAYS_OF_WEEK, not SQL-convention
+start_of_rp_week <- function(pm_slot) {
   candidate <- floor_date(pm_slot, "day") - 
-               days((wday(pm_slot, week_start = DAYS_OF_WEEK$MONDAY) - DAYS_OF_WEEK$THURSDAY) %% 7) + 
+               days((wday(pm_slot, week_start = R_DAYS_OF_WEEK$MONDAY) - R_DAYS_OF_WEEK$THURSDAY) %% 7) + 
                hours(13)
   if_else(candidate <= pm_slot, candidate, candidate - days(7))
 }
 
-ask_rebuild_date <- function() {
-  if (
-    requireNamespace("rstudioapi", quietly = TRUE) &&
-    rstudioapi::isAvailable()
-  ) {
-    rstudioapi::showPrompt(
-      title = "Rebuild start date",
-      message = "Rebuild from where? (yyyy-mm-dd)",
-      default = as.character(Sys.Date())
-    )
+get_rebuild_date <- function(pm_start) {
+  if (requireNamespace("rstudioapi", quietly = TRUE) && rstudioapi::isAvailable()) {
+    rstudioapi::showPrompt(title = "Rebuild start date",
+                           message = "Rebuild from where? (yyyy-mm-dd HH:MM:SS)",
+                           default = as.character(pm_start))
   } else {
-    readline("Rebuild from where? (yyyy-mm-dd) ")
+    readline("Rebuild from where? (yyyy-mm-dd HH:MM:SS) ")
   }
 }
 
+# make sure the clockprofile on GD is closed and circular: no gaps/overlaps, and stop_ts of last row = start_ts of first row
 check_circular_sequence <- function(x) {
   days <- c(ma = 0, di = 1, wo = 2, do = 3, vr = 4, za = 5, zo = 6)
   week_minutes <- 7 * 24 * 60
@@ -634,4 +637,82 @@ check_circular_sequence <- function(x) {
       actual_next_minute,
       problem
     )
+}
+
+`%||%` <- function(x, y) {
+  if (is.null(x) || length(x) == 0 || is.na(x) || !nzchar(x)) y else x
+}
+
+parse_args <- function(args = commandArgs(trailingOnly = TRUE)) {
+  out <- list()
+  
+  if (length(args) == 0) {
+    return(out)
+  }
+  
+  if (length(args) %% 2 != 0) {
+    stop("Arguments should be supplied as --key value pairs.", call. = FALSE)
+  }
+  
+  for (i in seq(1, length(args), by = 2)) {
+    key <- sub("^--", "", args[[i]])
+    value <- args[[i + 1]]
+    out[[key]] <- value
+  }
+  
+  out
+}
+
+# is_rstudio_interactive <- function() {
+#   interactive() && requireNamespace("rstudioapi", quietly = TRUE) && rstudioapi::isAvailable()
+# }
+# 
+# prompt_value <- function(title, message, default = "") {
+#   default <- if (is.null(default) || length(default) == 0 || is.na(default)) "" else as.character(default)
+#   
+#   if (is_rstudio_interactive()) {
+#     return(
+#       rstudioapi::showPrompt(
+#         title = title,
+#         message = message,
+#         default = default
+#       )
+#     )
+#   }
+#   
+#   value <- readline(
+#     prompt = paste0(message, if (nzchar(default)) paste0(" [", default, "] ") else " ")
+#   )
+#   
+#   if (nzchar(value)) value else default
+# }
+
+# get_site_id <- function(site_arg = NULL) {
+#   
+#   site_choice <- if (!is.null(site_arg) && nzchar(site_arg)) {
+#     site_arg
+#   } else if (interactive()) {
+#     prompt_value(title = "Select site", message = "1: Concertzender, 2: World of Jazz")
+#   } else {
+#     stop("Missing required argument: --site", call. = FALSE)
+#   }
+#   
+#   if (is.null(site)) {
+#     stop("Invalid site choice. Use 1 or 2.", call. = FALSE)
+#   }
+#   
+#   site
+# }
+# 
+# get_interactive_start_date <- function(start_of_new_week) {
+#   prompt_value(
+#     title = "Rebuild start date",
+#     message = "Rebuild from where? (yyyy-mm-dd HH:MM:SS)",
+#     default = start_of_new_week
+#   ) |>
+#     as.POSIXct(tz = "Europe/Amsterdam")
+# }
+
+fetch_broadcasts <- function(pm_con) {
+  dbGetQuery(pm_con, "select * from broadcasts where status == 'published'")
 }

@@ -78,7 +78,7 @@ if (n > 0) {
                                                pm_replay_target_slot = new_episodes_replay$slot[rn],
                                                pm_bc_type = new_episodes_replay$uitzendtype[rn],
                                                pm_nipperstudio = new_episodes_replay$nipper_mogelijk[rn],
-                                               pm_start_of_week = start_of_week(new_episodes_replay$slot[rn]))
+                                               pm_start_of_rp_week = start_of_rp_week(new_episodes_replay$slot[rn]))
     # log as "not found"
     if (prep_episode_entry_id[rn] == "NOT FOUND") {
       v1 <- new_episodes_replay$titel_NL[rn]
@@ -112,7 +112,7 @@ if (n > 0) {
 }
 
 result <- list(
-  n_new_episodes_fresh = nrow(new_episodes_fresh),
+  n_new_episodes_fresh  = nrow(new_episodes_fresh),
   n_new_episodes_replay = nrow(new_episodes_replay),
   tib_clock_upd = tib_clock
 )

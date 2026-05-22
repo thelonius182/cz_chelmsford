@@ -5,7 +5,7 @@ begin_ts <- force_tz(ymd_hms("2026-06-11 12:50:00", quiet = T), tzone = "Europe/
 end_ts <- begin_ts + days(7L)
 
 # load SQL
-sql <- read_file("resources/remove_week.sql")
+sql <- read_file("SQL/remove_week.sql")
 
 # split statements
 statements <- sql |>

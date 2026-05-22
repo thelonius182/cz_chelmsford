@@ -1,6 +1,6 @@
-# - - - - - - - - - - - - -
-# Rebuild program clock CZ
-# - - - - - - - - - - - - -
+# - - - - - - - - - - - - - - - - - - - - -
+# (Re-)build program clock for CZ or WJ
+# - - - - - - - - - - - - - - - - - - - - -
 
 # init ----
 pacman::p_load(tidyr, dplyr, stringr, readr, lubridate, fs, futile.logger, readxl, DBI, digest, optparse,
@@ -11,52 +11,60 @@ log_slug <- "clof"
 apf <- flog.appender(appender.file(config$log_appender_file_cz), log_slug)
 source("R/custom_functions.R", encoding = "UTF-8")
 
-# Where to start rebuilding?
-rebuild_start_chr <-
-  if (interactive()) {
-    ask_rebuild_date()
-  } else {
-    opts <- parse_rebuild_options()
-    opts$date
-  }
-
-rebuild_start <- as.Date(rebuild_start_chr)
-
-if (is.na(rebuild_start)) {
-  stop("Invalid date. Please use yyyy-mm-dd.", call. = FALSE)
-}
-
-rebuild_start <- ymd(rebuild_start_chr, tz = "Europe/Amsterdam", quiet = T) 
-
-if (is.na(rebuild_start)) {
-  cat(rebuild_start_chr)
-  stop("invalid date")
-}
-
-flog.info("\n = = = = = =  Rebuilding program clock CZ = = = = = =", name = log_slug)
+flog.info("\n= = = = = =  extend or revise the program clock = = = = = =", name = log_slug)
 
 TZ_AM <- "Europe/Amsterdam"
 SITE <- list(CONCERTZENDER = 1L, WORLD_OF_JAZZ = 2L)
-BUILD_TYPE <- list(PROD = 1L, REV  = 2L)
-DAYS_OF_WEEK <- list(MONDAY = 1L, THURSDAY = 4L)
+BUILD_TYPE <- list(EXTEND = 1L, REVISE  = 2L)
+R_DAYS_OF_WEEK <- list(MONDAY = 1L, THURSDAY = 4L) # R and SQL have different conventions
 fmt_ts <- stamp("1958-12-25 13:00:00", quiet = T, orders = "ymd HMS")
 
 # connect to CPNM-database ----
 source("R/cpnm_db_setup.R", encoding = "UTF-8")
 
+# usage: via RStudio run both NEW and REV, input both site and date. Via Powershell run NEW only, input just the site
+if (interactive() && requireNamespace("rstudioapi", quietly = TRUE) && rstudioapi::isAvailable()) {
+  
+  # prompt: build for which site?
+  site_id_chr <- rstudioapi::showPrompt(title = "Select site", message = "1: Concertzender, 2: World of Jazz")
+  site_id <- as.integer(site_id_chr)
+  
+  # prompt: where to start (re-)building for that site?
+  dft_build_from_utc <- new_week_start(pm_site = site_id, pm_cpnm_db = con)
+  dft_build_from_NL <- force_tz(dft_build_from_utc$value, tzone = TZ_AM)  
+  build_from_chr <- rstudioapi::showPrompt(title = "Build from date/time", 
+                                              message = "shown: start of next new week", 
+                                              default = fmt_ts(dft_build_from_NL))
+  build_from_NL <- ymd_hms(build_from_chr, quiet = T, tz = TZ_AM)
+  
+  if (is.na(build_from_NL)) {
+    cat(as.character(build_from_NL))
+    stop("Invalid date. Expect 'ymd hms'-format", call. = FALSE)
+  }
+  
+  cur_build_type <- if (dft_build_from_NL == build_from_NL) BUILD_TYPE$EXTEND else BUILD_TYPE$REVISE
+} else {
+  # get cmd-line input
+  srvjob_args <- parse_args()
+  site_id <- as.integer(srvjob_args$site_id)
+  build_from_utc <- new_week_start(pm_site = site_id, pm_cpnm_db = con)
+  build_from_NL <- force_tz(build_from_utc$value, tzone = TZ_AM)  
+  cur_build_type <- BUILD_TYPE$EXTEND
+}
+
 # Build production clock set ----
-rebuild_start13 <- rebuild_start
-hour(rebuild_start13) <- 13L
-rebuild_start13_utc <- force_tz(rebuild_start13, tzone = "UTC")
-prod_clock_set_db_raw <- dbGetQuery(conn = con, statement = read_file("resources/load-production-clockset.sql"),
-                                    params = list(rebuild_start13_utc))
+rebuild_start_utc <- force_tz(rebuild_start, tzone = "UTC")
+prod_clock_set_db_raw <- dbGetQuery(conn = con, statement = read_file("SQL/load-production-clockset.sql"),
+                                    params = list(rebuild_start_utc))
 prod_clock_set_db <- prod_clock_set_db_raw |>
-  mutate(across(where(~ inherits(.x, "POSIXct")), ~ force_tz(.x, tzone = "Europe/Amsterdam")),
+  mutate(across(where(~ inherits(.x, "POSIXct")), ~ force_tz(.x, tzone = TZ_AM)),
          bc_name = str_replace(bc_name, "&amp;", "&"))
 
 # > Main Control Loop ----
+# read this as DO {...} WHILE(FALSE)
 repeat {
-  flog.info(str_glue("Start = Thursday {fmt_ts(rebuild_start13)}"), name = log_slug)
+  flog_bt <- names(BUILD_TYPE)[BUILD_TYPE == cur_build_type]
+  flog.info(str_glue("Start = Thursday {fmt_ts(rebuild_start)}, build type {flog_bt}"), name = log_slug)
   
   # . trigger GD-auth
   with_drive_quiet(
@@ -92,10 +100,11 @@ repeat {
   df_clockprofile_cz_raw <- cz_extract_sheet(path_clockprofile_cz, sheet_name = "cz-data") |> rename(slot_key = slot) |> 
     mutate(slot_minutes = as.integer(min), .keep = "unused", .after = slot_key)
     
-  # validate slot/minutes columns in profile
+  # validate slot/minutes columns in clockprofile
   ccs <- check_circular_sequence(df_clockprofile_cz_raw |> select(slot_key, slot_minutes))
+  
   if (nrow(ccs) > 0) {
-    flog.error("clock profile has errors in slot/minutes columns; quiting this job.", name = log_slug)
+    flog.error("slots/minutes in GD-clock profile are misaligned/non-circular; quiting this job.", name = log_slug)
     break
   }
   
@@ -106,18 +115,20 @@ repeat {
   mk_week.1 <- df_clockprofile_cz_raw |> filter(!is.na(`week 1`)) |> select(1:4, catalg_key = `week 1`, prod_type = t1) |> 
     mutate(block = 1L)
   mk_week.2 <- df_clockprofile_cz_raw |> filter(!is.na(`week 2`)) |> select(1:4, catalg_key = `week 2`, prod_type = t2) |> 
+                                      # - - - - Repair 'Thema' - - - - - - - - - - - #
     mutate(block = 2L, slot_minutes = if_else(slot_key == "wo20", 120L, slot_minutes)) |> filter(slot_key != "wo21")
   mk_week.3 <- df_clockprofile_cz_raw |> filter(!is.na(`week 3`)) |> select(1:4, catalg_key = `week 3`, prod_type = t3) |> 
     mutate(block = 3L)
   mk_week.4 <- df_clockprofile_cz_raw |> filter(!is.na(`week 4`)) |> select(1:4, catalg_key = `week 4`, prod_type = t4) |> 
+                                      # - - - - Repair 'Thema' - - - - - - - - - - - #
     mutate(block = 4L, slot_minutes = if_else(slot_key == "wo20", 120L, slot_minutes)) |> filter(slot_key != "wo21")
   mk_week.5 <- df_clockprofile_cz_raw |> filter(!is.na(`week 5`)) |> select(1:4, catalg_key = `week 5`, prod_type = t5) |> 
     mutate(block = 5L)
   
   # build a clock ----
-  bc_week_to <- if (nrow(prod_clock_set_db) > 0) max(prod_clock_set_db$bc_start) else rebuild_start13 + days(7L) - minutes(10L)
+  bc_week_to <- if (nrow(prod_clock_set_db) > 0) max(prod_clock_set_db$bc_start) else rebuild_start + days(7L) - minutes(10L)
   
-  bc_week_ts <- tibble(ts = seq(from = rebuild_start13, to = bc_week_to, by = "hour"))
+  bc_week_ts <- tibble(ts = seq(from = rebuild_start, to = bc_week_to, by = "hour"))
   
   df_calendar <- add_bc_cols(bc_week_ts, ts) |> 
     mutate(cycle = if_else(bc_day_label == "do" & bc_hour_start == 13, week_label(ts), NA_character_)) |> 
@@ -301,7 +312,7 @@ repeat {
   
   # . get episode chains ----
   chain_env <- new.env(parent = globalenv())
-  chain_env$max_ts_to_load <- rebuild_start13
+  chain_env$max_ts_to_load <- rebuild_start
   chain_env$con <- con
   source("R/load-episode-chains.R", local = chain_env)
   episode_chains <- chain_env$episode_chains
@@ -320,13 +331,18 @@ repeat {
   n_new_episodes_replay <- result$n_new_episodes_replay
   tib_clock_upd <- result$tib_clock_upd
   
-  # when a new week was built, check for gaps
-  begin_ts <- rebuild_start13 - minutes(10L)
-  end_ts <- begin_ts + days(7L)
-  week_gaps <- dbGetQuery(conn = con, statement = read_file("resources/check_for_gaps.sql"), 
-                          params = list(fmt_ts(begin_ts), fmt_ts(end_ts)))
-
-  if (nrow(week_gaps) > 0)
+  # new week: check for gaps ----
+  if (cur_build_type == BUILD_TYPE$EXTEND) {
+    begin_ts <- rebuild_start - minutes(10L)
+    end_ts <- begin_ts + days(7L)
+    week_gaps <- dbGetQuery(conn = con, statement = read_file("SQL/check_for_gaps.sql"), 
+                            params = list(fmt_ts(begin_ts), fmt_ts(end_ts)))
+    
+    if (nrow(week_gaps) > 0) {
+      flog.error("Adding a new week failed because of gaps; quiting this job.", name = log_slug)
+      break
+    }
+  }
   
   # Exit from MCL
   break
