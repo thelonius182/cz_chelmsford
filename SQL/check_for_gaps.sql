@@ -4,7 +4,7 @@ with broadcasts as (
     from entries b join entries e on e.id = b.parent_id
                                  and e.type = 'episode'
                                  and e.deleted_at is null
-    where cast(b.dates->>'$.start' as datetime) between ? and ?
+    where cast(b.dates->>'$.start' as datetime) > ?
       and b.type = 'broadcast'
       and b.site_id = 1
       and b.deleted_at is null

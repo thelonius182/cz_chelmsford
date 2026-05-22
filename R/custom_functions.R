@@ -16,7 +16,7 @@ has_value <- function(x) nzchar(x)
 
 fmt_ts <- stamp("1958-12-25 13:00:00", quiet = T, orders = "ymd HMS")
 
-add_bc_cols <- function(data, ts_col, tz = "Europe/Amsterdam") {
+add_bc_cols <- function(data, ts_col, tz = TZ_AM) {
   ts_col <- rlang::ensym(ts_col)
   
   day_map <- c("zo","ma","di","wo","do","vr","za")  # lubridate wday: 1=Sunday .. 7=Saturday
@@ -44,50 +44,54 @@ logfmt_ts <- function(x) {
   format(x, "%Y-%m-%d %H:%M:%S %Z")
 }
 
-# Infer the bi-weekly cycle (A or B); CZ only 
-# 'start_of_week' is expected to be Thursday 13:00
-week_label <- function(start_of_week) {
-  ref_date_B_cycle <- ymd_hms("2019-10-17 13:00:00", tz = "Europe/Amsterdam", quiet = TRUE)
-  n_weeks <- as.integer(start_of_week - ref_date_B_cycle) %/% 7
+# Infer the bi-weekly cycle (A or B)
+bc_week_label <- function(pm_start_of_bc_week, pm_site_id) {
+  ref_date_B_cycle <- ymd_hms("2019-10-17 13:00:00", tz = TZ_AM, quiet = TRUE)
+  hour(ref_date_B_cycle) <- bc_week_start_hour(pm_site_id)
+  n_weeks <- as.integer(pm_start_of_bc_week - ref_date_B_cycle) %/% 7
   if_else(n_weeks %% 2 == 0, "B", "A")
 }
 
-new_week_start <- function(pm_site, pm_cpnm_db) {
-  new_week_start_hour <- case_when(pm_site == SITE$CONCERTZENDER ~ config$cz_weekstart_hour,
-                                   pm_site == SITE$WORLD_OF_JAZZ ~ config$wj_weekstart_hour,
-                                   TRUE ~ 0L)
-  nws_rgx <- paste0(new_week_start_hour, ":00:00$")
+bc_week_start_hour <- function(pm_site_id) {
+  case_when(pm_site_id == SITE$CONCERTZENDER ~ config$bc_week_start_hour_cz,
+            pm_site_id == SITE$WORLD_OF_JAZZ ~ config$bc_week_start_hour_wj,
+            TRUE ~ 0L)
+}
+
+next_bc_week_start <- function(pm_site_id, pm_cpnm_db) {
+  next_bc_week_start_hour <- bc_week_start_hour(pm_site_id)
+  nws_rgx <- paste0(next_bc_week_start_hour, ":00:00$")
   SQL_THURSDAY <- 3L
   sql_stmt <- glue_sql("with thu_hh as (
 	                        select dates->>'$.start' as max_thursday
 	                        from entries 
 	                        where type = 'broadcast' 
-	                          and site_id = {pm_site}
+	                          and site_id = {pm_site_id}
                             and deleted_at is null
                             and dates->>'$.start' regexp {nws_rgx}
                             and weekday(dates->>'$.start') = {SQL_THURSDAY}
                           order by 1 desc
                           limit 1
                         )
-                        select date(max_thursday) + interval 7 DAY + interval {new_week_start_hour} HOUR as value
+                        select date(max_thursday) + interval 7 DAY + interval {next_bc_week_start_hour} HOUR as value
                         from thu_hh;", .con = pm_cpnm_db)
   dbGetQuery(pm_cpnm_db, sql_stmt)
 }
 
-locked_slots <- function(pm_start, pm_stop, pm_site, pm_db) {
-  fmt_start_ts = fmt_ts(pm_start - minutes(10L))
-  fmt_stop_ts = fmt_ts(pm_stop - minutes(10L))
-  sql_stmt <- glue_sql(
-  "select dates->>'$.start' as slot,
-   parent_id as episode_entry_id
-   from entries
-   where type = 'broadcast'
-     and site_id = {pm_site}
-     and deleted_at is null
-     and dates->>'$.start' between {fmt_start_ts} and {fmt_stop_ts};",
-  .con = pm_db)
-  dbGetQuery(pm_db, sql_stmt)
-}
+# locked_slots <- function(pm_start, pm_stop, pm_site_id, pm_db) {
+#   fmt_start_ts = fmt_ts(pm_start - minutes(10L))
+#   fmt_stop_ts = fmt_ts(pm_stop - minutes(10L))
+#   sql_stmt <- glue_sql(
+#   "select dates->>'$.start' as slot,
+#    parent_id as episode_entry_id
+#    from entries
+#    where type = 'broadcast'
+#      and site_id = {pm_site_id}
+#      and deleted_at is null
+#      and dates->>'$.start' between {fmt_start_ts} and {fmt_stop_ts};",
+#   .con = pm_db)
+#   dbGetQuery(pm_db, sql_stmt)
+# }
 
 cpnm_edi_ins <- function(pm_name_NL, pm_cpnm_db) {
   new_id <- UUIDgenerate(use.time = FALSE)  # v4
@@ -321,20 +325,20 @@ cpnm_cck_ins <- function(pm_epi_id,
   sql_res <- dbExecute(pm_cpnm_db, sql_stmt)
 }
 
-cpnm_uni_get <- function(pm_pgm_id, pm_max_start, pm_cpnm_db) {
-  sql_stmt <- glue_sql("select e.id as epi_id, 
-                               b.dates->>'$.start' as epi_start 
-                        from entries p join entries e on e.parent_id = p.id
-                                                     and e.deleted_at is null
-                                       join entries b on b.parent_id = e.id
-                                                     and b.deleted_at is null
-                        where p.id = {pm_pgm_id}
-                          and b.dates->>'$.start' < {pm_max_start}
-                        order by 2 desc 
-                        limit 1
-                        ;", .con = pm_cpnm_db)
-  sql_res <- dbGetQuery(pm_cpnm_db, sql_stmt)
-}
+# cpnm_uni_get <- function(pm_pgm_id, pm_max_start, pm_cpnm_db) {
+#   sql_stmt <- glue_sql("select e.id as epi_id, 
+#                                b.dates->>'$.start' as epi_start 
+#                         from entries p join entries e on e.parent_id = p.id
+#                                                      and e.deleted_at is null
+#                                        join entries b on b.parent_id = e.id
+#                                                      and b.deleted_at is null
+#                         where p.id = {pm_pgm_id}
+#                           and b.dates->>'$.start' < {pm_max_start}
+#                         order by 2 desc 
+#                         limit 1
+#                         ;", .con = pm_cpnm_db)
+#   sql_res <- dbGetQuery(pm_cpnm_db, sql_stmt)
+# }
 
 cpnm_img_get <- function(pm_img_id, pm_cpnm_db) {
   sql_stmt <- glue_sql("SELECT id FROM media 
@@ -345,7 +349,7 @@ cpnm_img_get <- function(pm_img_id, pm_cpnm_db) {
   sql_res <- dbGetQuery(pm_cpnm_db, sql_stmt)
 }
 
-clock2db <- function(pm_clock_tib, pm_created_at, pm_site, pm_db) {
+clock2db <- function(pm_clock_tib, pm_created_at, pm_site_id, pm_db) {
   
   # - some fresh programs have 2 main genres, so have 2 records; treat them separately: 'a' for all columns,
   #   and 'b' just for the extra genre
@@ -360,7 +364,7 @@ clock2db <- function(pm_clock_tib, pm_created_at, pm_site, pm_db) {
                                     pm_descr_NL = cur_clock_a$intro_NL[rn],
                                     pm_descr_EN = cur_clock_a$intro_EN[rn],
                                     pm_img_id = cur_clock_a$image_id[rn],
-                                    pm_site_id = pm_site,
+                                    pm_site_id = pm_site_id,
                                     pm_bc_start = cur_clock_a$slot[rn],
                                     pm_bc_minutes = cur_clock_a$slot_minutes[rn],
                                     pm_created_at,
@@ -397,44 +401,44 @@ clock2db <- function(pm_clock_tib, pm_created_at, pm_site, pm_db) {
   }
 }
 
-epi_replays <- function(pm_pgm_id, pm_genre, pm_max_ts, pm_cpnm_db) {
-  sqlstmt <- glue_sql("WITH episodes AS (
-         SELECT e.id,
-                e.title->>'$.nl' AS epi_title
-         FROM entries e
-         WHERE e.parent_id = {pgm_id}
-           AND e.site_id = 1
-           AND e.deleted_at IS NULL
-     ),
-     broadcasts AS (
-         SELECT b.parent_id AS epi_id,
-                max(b.dates->>'$.start') AS bc_start
-         FROM entries b JOIN episodes e ON e.id = b.parent_id
-         WHERE b.site_id = 1
-           AND b.deleted_at IS NULL
-         GROUP BY b.parent_id
-     ),
-     base as (
-         SELECT
-         e.id AS epi_id,
-         e.epi_title,
-         b.bc_start,
-         (
-             SELECT GROUP_CONCAT(ty.name->>'$.nl' ORDER BY ty.name->>'$.nl' SEPARATOR '-')
-             FROM taxonomables tb JOIN taxonomies ty ON ty.id = tb.taxonomy_id
-                                                    AND ty.type = 'genre'
-                                                    AND ty.site_id = 1
-                                                    AND ty.deleted_at IS NULL
-             WHERE tb.taxonomable_id = e.id
-               AND tb.taxonomable_type = 'episode'
-         ) AS genre_name
-         FROM episodes e LEFT JOIN broadcasts b ON b.epi_id = e.id
-     )
-     select * from base
-     where genre_name = {pm_genre} and bc_start < {pm_max_ts}
-     ORDER BY bc_start DESC
-     limit 1;", .con = pm_cpnm_db)
-}
+# epi_replays <- function(pm_pgm_id, pm_genre, pm_max_ts, pm_cpnm_db) {
+#   sqlstmt <- glue_sql("WITH episodes AS (
+#          SELECT e.id,
+#                 e.title->>'$.nl' AS epi_title
+#          FROM entries e
+#          WHERE e.parent_id = {pgm_id}
+#            AND e.site_id = 1
+#            AND e.deleted_at IS NULL
+#      ),
+#      broadcasts AS (
+#          SELECT b.parent_id AS epi_id,
+#                 max(b.dates->>'$.start') AS bc_start
+#          FROM entries b JOIN episodes e ON e.id = b.parent_id
+#          WHERE b.site_id = 1
+#            AND b.deleted_at IS NULL
+#          GROUP BY b.parent_id
+#      ),
+#      base as (
+#          SELECT
+#          e.id AS epi_id,
+#          e.epi_title,
+#          b.bc_start,
+#          (
+#              SELECT GROUP_CONCAT(ty.name->>'$.nl' ORDER BY ty.name->>'$.nl' SEPARATOR '-')
+#              FROM taxonomables tb JOIN taxonomies ty ON ty.id = tb.taxonomy_id
+#                                                     AND ty.type = 'genre'
+#                                                     AND ty.site_id = 1
+#                                                     AND ty.deleted_at IS NULL
+#              WHERE tb.taxonomable_id = e.id
+#                AND tb.taxonomable_type = 'episode'
+#          ) AS genre_name
+#          FROM episodes e LEFT JOIN broadcasts b ON b.epi_id = e.id
+#      )
+#      select * from base
+#      where genre_name = {pm_genre} and bc_start < {pm_max_ts}
+#      ORDER BY bc_start DESC
+#      limit 1;", .con = pm_cpnm_db)
+# }
 
 derive_clock_key <- function(slot_ts) {
   slot_week <- 1 + floor((day(slot_ts - 1) / 7))
@@ -527,14 +531,14 @@ lookup_replay <- function(pm_chains,
                           pm_replay_target_slot,
                           pm_bc_type,
                           pm_nipperstudio,
-                          pm_start_of_rp_week) {
+                          pm_replay_week_start) {
   # prune current chain
   replay_candidates <- pm_chains |> filter(episode_chain == pm_cur_chain)
   
   replay_source <- if (nrow(replay_candidates) == 0) {
     "NOT FOUND"
   } else if (pm_bc_type == "live") {
-    shortlist <- replay_candidates |> filter(ec_slot < pm_start_of_rp_week)
+    shortlist <- replay_candidates |> filter(ec_slot < pm_replay_week_start)
     
     if (nrow(shortlist) == 0) "NOT FOUND" else shortlist$episode_entry_id[1]
     
@@ -582,24 +586,25 @@ log_tibble <- function(x, label = deparse(substitute(x)), n = 20, width = 160) {
 #   opts$date
 # }
 
-# start of replay-week
-# uses R-convention for DAYS_OF_WEEK, not SQL-convention
-start_of_rp_week <- function(pm_slot) {
-  candidate <- floor_date(pm_slot, "day") - 
-               days((wday(pm_slot, week_start = R_DAYS_OF_WEEK$MONDAY) - R_DAYS_OF_WEEK$THURSDAY) %% 7) + 
-               hours(13)
-  if_else(candidate <= pm_slot, candidate, candidate - days(7))
+# For this site return the broadcast week boundary at or before this slot
+# - uses R-convention for DAYS_OF_WEEK, not SQL-convention
+bc_week_start <- function(pm_slot_start, pm_site_id) {
+  h1 <- bc_week_start_hour(pm_site_id)
+  candidate <- floor_date(pm_slot_start, "day") - 
+               days((wday(pm_slot_start, week_start = R_DAYS_OF_WEEK$MONDAY) - R_DAYS_OF_WEEK$THURSDAY) %% 7L) + 
+               hours(h1)
+  if_else(candidate <= pm_slot_start, candidate, candidate - days(7L))
 }
 
-get_rebuild_date <- function(pm_start) {
-  if (requireNamespace("rstudioapi", quietly = TRUE) && rstudioapi::isAvailable()) {
-    rstudioapi::showPrompt(title = "Rebuild start date",
-                           message = "Rebuild from where? (yyyy-mm-dd HH:MM:SS)",
-                           default = as.character(pm_start))
-  } else {
-    readline("Rebuild from where? (yyyy-mm-dd HH:MM:SS) ")
-  }
-}
+# get_rebuild_date <- function(pm_start) {
+#   if (requireNamespace("rstudioapi", quietly = TRUE) && rstudioapi::isAvailable()) {
+#     rstudioapi::showPrompt(title = "Rebuild start date",
+#                            message = "Rebuild from where? (yyyy-mm-dd HH:MM:SS)",
+#                            default = as.character(pm_start))
+#   } else {
+#     readline("Rebuild from where? (yyyy-mm-dd HH:MM:SS) ")
+#   }
+# }
 
 # make sure the clockprofile on GD is closed and circular: no gaps/overlaps, and stop_ts of last row = start_ts of first row
 check_circular_sequence <- function(x) {

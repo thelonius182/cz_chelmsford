@@ -45,7 +45,8 @@ cpnm_epi_bc <- db_cpnm_items_raw_epi |> inner_join(db_cpnm_items_raw_bc, by = jo
   mutate(across(where(~ inherits(.x, "POSIXct")), ~ force_tz(.x, tzone = "Europe/Amsterdam")),
          title_nl = str_replace(title_nl, "&amp;", "&"),
          title_nl = str_to_lower(title_nl)) |> 
-  filter(str_length(str_trim(title_nl, side = "both")) > 0  & dttm_start >= max_ts_to_load - days(200)) |> 
+  filter(str_length(str_trim(title_nl, side = "both")) > 0) |> 
+  # filter(str_length(str_trim(title_nl, side = "both")) > 0  & dttm_start >= max_ts_to_load - days(200)) |> 
   add_bc_cols(ts_col = dttm_start) |> 
   mutate(slot_key = paste0(slot_key, "-", bc_week_of_month)) |> 
   select(ep_id = id, dttm_start, dttm_stop, slot_key, title_nl, has_content) |> 
@@ -59,17 +60,17 @@ cpnm_epi_bc <- db_cpnm_items_raw_epi |> inner_join(db_cpnm_items_raw_bc, by = jo
 chains_a <- clean_chains |> 
   filter(!is.na(wp_slot))
 joined_slots_a <- cpnm_epi_bc |> 
-  inner_join(chains_a, by = join_by(title_nl == wp_title, slot_key == wp_slot)) |> 
-  filter(dttm_start < max_ts_to_load)
+  inner_join(chains_a, by = join_by(title_nl == wp_title, slot_key == wp_slot)) 
+  # filter(dttm_start < max_ts_to_load)
 chains_b <- clean_chains |> 
   filter(is.na(wp_slot))
 joined_slots_b <- cpnm_epi_bc |> 
-  inner_join(chains_b, by = join_by(title_nl == wp_title)) |> 
-  filter(dttm_start < max_ts_to_load)
+  inner_join(chains_b, by = join_by(title_nl == wp_title)) 
+  # filter(dttm_start < max_ts_to_load)
 
 # combine both sets again ----
 episode_chains <- joined_slots_a |> 
   bind_rows(joined_slots_b) |> 
-  arrange(episode_chain, dttm_start) |> 
+  arrange(episode_chain, desc(dttm_start)) |> 
   mutate(is_replay = F) |> 
   select(slot = dttm_start, slot_key, is_replay, episode_entry_id = ep_id, episode_chain, has_content)

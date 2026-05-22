@@ -24,7 +24,7 @@ ts_now = now()
 fmt_created_at = format(ts_now, tz = "UTC", usetz = FALSE)
 
 if (nrow(new_episodes_fresh) > 0) {
-  flog.info(str_glue("adding fresh clock items to database, using `created_at` = {fmt_created_at} UTC"), name = log_slug)
+  flog.info(str_glue("adding newest clock items to database, using `created_at` = {fmt_created_at} UTC"), name = log_slug)
   
   func_result <- clock2db(pm_clock_tib = new_episodes_fresh,
                           pm_created_at = ts_now,
@@ -66,8 +66,7 @@ new_episodes_replay <- tib_clock |>
 n <- nrow(new_episodes_replay)
 
 if (n > 0) {
-  flog.info("adding replays to database, same `created_at`", name = log_slug)
-  
+  flog.info(str_glue("adding replay clock items to database, using `created_at` = {fmt_created_at} UTC"), name = log_slug)
   # prep vectors for tibble used later in 'update the clock'
   prep_slot <- new_episodes_replay$slot
   prep_episode_entry_id <- character(n)
@@ -78,7 +77,8 @@ if (n > 0) {
                                                pm_replay_target_slot = new_episodes_replay$slot[rn],
                                                pm_bc_type = new_episodes_replay$uitzendtype[rn],
                                                pm_nipperstudio = new_episodes_replay$nipper_mogelijk[rn],
-                                               pm_start_of_rp_week = start_of_rp_week(new_episodes_replay$slot[rn]))
+                                               pm_replay_week_start = bc_week_start(pm_slot_start = new_episodes_replay$slot[rn], 
+                                                                                    pm_site_id = cur_site))
     # log as "not found"
     if (prep_episode_entry_id[rn] == "NOT FOUND") {
       v1 <- new_episodes_replay$titel_NL[rn]

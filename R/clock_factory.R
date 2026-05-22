@@ -11,7 +11,7 @@ log_slug <- "clof"
 apf <- flog.appender(appender.file(config$log_appender_file_cz), log_slug)
 source("R/custom_functions.R", encoding = "UTF-8")
 
-flog.info("\n= = = = = =  extend or revise the program clock = = = = = =", name = log_slug)
+flog.info("\n= = = = = = extend or revise the program clock = = = = = =", name = log_slug)
 
 TZ_AM <- "Europe/Amsterdam"
 SITE <- list(CONCERTZENDER = 1L, WORLD_OF_JAZZ = 2L)
@@ -30,8 +30,8 @@ if (interactive() && requireNamespace("rstudioapi", quietly = TRUE) && rstudioap
   site_id <- as.integer(site_id_chr)
   
   # prompt: where to start (re-)building for that site?
-  dft_build_from_utc <- new_week_start(pm_site = site_id, pm_cpnm_db = con)
-  dft_build_from_NL <- force_tz(dft_build_from_utc$value, tzone = TZ_AM)  
+  dft_build_from_UTC <- next_bc_week_start(pm_site_id = site_id, pm_cpnm_db = con)
+  dft_build_from_NL <- force_tz(dft_build_from_UTC$value, tzone = TZ_AM)  
   build_from_chr <- rstudioapi::showPrompt(title = "Build from date/time", 
                                               message = "shown: start of next new week", 
                                               default = fmt_ts(dft_build_from_NL))
@@ -47,15 +47,14 @@ if (interactive() && requireNamespace("rstudioapi", quietly = TRUE) && rstudioap
   # get cmd-line input
   srvjob_args <- parse_args()
   site_id <- as.integer(srvjob_args$site_id)
-  build_from_utc <- new_week_start(pm_site = site_id, pm_cpnm_db = con)
-  build_from_NL <- force_tz(build_from_utc$value, tzone = TZ_AM)  
+  build_from_UTC <- next_bc_week_start(pm_site_id = site_id, pm_cpnm_db = con)
+  build_from_NL <- force_tz(build_from_UTC$value, tzone = TZ_AM)  
   cur_build_type <- BUILD_TYPE$EXTEND
 }
 
 # Build production clock set ----
-rebuild_start_utc <- force_tz(rebuild_start, tzone = "UTC")
 prod_clock_set_db_raw <- dbGetQuery(conn = con, statement = read_file("SQL/load-production-clockset.sql"),
-                                    params = list(rebuild_start_utc))
+                                    params = fmt_ts(build_from_NL))
 prod_clock_set_db <- prod_clock_set_db_raw |>
   mutate(across(where(~ inherits(.x, "POSIXct")), ~ force_tz(.x, tzone = TZ_AM)),
          bc_name = str_replace(bc_name, "&amp;", "&"))
@@ -64,7 +63,7 @@ prod_clock_set_db <- prod_clock_set_db_raw |>
 # read this as DO {...} WHILE(FALSE)
 repeat {
   flog_bt <- names(BUILD_TYPE)[BUILD_TYPE == cur_build_type]
-  flog.info(str_glue("Start = Thursday {fmt_ts(rebuild_start)}, build type {flog_bt}"), name = log_slug)
+  flog.info(str_glue("Start = Thursday {fmt_ts(build_from_NL)}, build type {flog_bt}"), name = log_slug)
   
   # . trigger GD-auth
   with_drive_quiet(
@@ -114,6 +113,8 @@ repeat {
     rename(catalg_key = `twee-wekelijks`) |> pivot_longer(cols = c(A, B), names_to = "cycle", values_to = "prod_type")
   mk_week.1 <- df_clockprofile_cz_raw |> filter(!is.na(`week 1`)) |> select(1:4, catalg_key = `week 1`, prod_type = t1) |> 
     mutate(block = 1L)
+  
+  # repair 'Thema' on CZ only
   mk_week.2 <- df_clockprofile_cz_raw |> filter(!is.na(`week 2`)) |> select(1:4, catalg_key = `week 2`, prod_type = t2) |> 
                                       # - - - - Repair 'Thema' - - - - - - - - - - - #
     mutate(block = 2L, slot_minutes = if_else(slot_key == "wo20", 120L, slot_minutes)) |> filter(slot_key != "wo21")
@@ -126,12 +127,14 @@ repeat {
     mutate(block = 5L)
   
   # build a clock ----
-  bc_week_to <- if (nrow(prod_clock_set_db) > 0) max(prod_clock_set_db$bc_start) else rebuild_start + days(7L) - minutes(10L)
+  bc_week_to <- if (nrow(prod_clock_set_db) > 0) max(prod_clock_set_db$bc_start) else build_from_NL + days(7L) - minutes(10L)
   
-  bc_week_ts <- tibble(ts = seq(from = rebuild_start, to = bc_week_to, by = "hour"))
+  bc_week_ts <- tibble(ts = seq(from = build_from_NL, to = bc_week_to, by = "hour"))
   
   df_calendar <- add_bc_cols(bc_week_ts, ts) |> 
-    mutate(cycle = if_else(bc_day_label == "do" & bc_hour_start == 13, week_label(ts), NA_character_)) |> 
+    mutate(cycle = if_else(bc_day_label == "do" & bc_hour_start == bc_week_start_hour(site_id), 
+                           bc_week_label(pm_start_of_bc_week = ts, pm_site_id = site_id), 
+                           NA_character_)) |> 
     fill(cycle, .direction = "down") |> select(slot = ts, slot_key, block = bc_week_of_month, cycle)
   
   df_clock_cz_weekly <- df_calendar |> inner_join(mk_weekly, by = join_by(slot_key))
@@ -280,7 +283,7 @@ repeat {
   
   # . no diffs ----
   if (nrow(df_clock_cz_cur.6) == 0) {
-    flog.error("Nothing found to build or rebuild; quiting this job.", name = log_slug)
+    flog.error(str_glue("Nothing found to {flog_bt}; quiting this job."), name = log_slug)
     break
   }
   
@@ -312,7 +315,7 @@ repeat {
   
   # . get episode chains ----
   chain_env <- new.env(parent = globalenv())
-  chain_env$max_ts_to_load <- rebuild_start
+  # chain_env$max_ts_to_load <- build_from_NL
   chain_env$con <- con
   source("R/load-episode-chains.R", local = chain_env)
   episode_chains <- chain_env$episode_chains
@@ -323,7 +326,7 @@ repeat {
   upd_cpnm_env$con <- con
   upd_cpnm_env$episode_chains <- episode_chains
   upd_cpnm_env$log_slug <- log_slug
-  upd_cpnm_env$cur_site <- SITE$CONCERTZENDER
+  upd_cpnm_env$cur_site <- site_id
   upd_cpnm_env$TZ_AM <- TZ_AM
   source("R/update_cpnm.R", local = upd_cpnm_env)
   result <- upd_cpnm_env$result
@@ -331,18 +334,22 @@ repeat {
   n_new_episodes_replay <- result$n_new_episodes_replay
   tib_clock_upd <- result$tib_clock_upd
   
-  # new week: check for gaps ----
-  if (cur_build_type == BUILD_TYPE$EXTEND) {
-    begin_ts <- rebuild_start - minutes(10L)
-    end_ts <- begin_ts + days(7L)
-    week_gaps <- dbGetQuery(conn = con, statement = read_file("SQL/check_for_gaps.sql"), 
-                            params = list(fmt_ts(begin_ts), fmt_ts(end_ts)))
-    
-    if (nrow(week_gaps) > 0) {
-      flog.error("Adding a new week failed because of gaps; quiting this job.", name = log_slug)
-      break
-    }
+  # new week: check for gaps/overlaps ----
+  # if (cur_build_type == BUILD_TYPE$EXTEND) {
+    # begin_ts <- build_from_NL - minutes(10L)
+    # end_ts <- begin_ts + days(7L)
+  week_seq_err <- dbGetQuery(conn = con, statement = read_file("SQL/check_for_gaps.sql"), 
+                             # params = list(fmt_ts(begin_ts), fmt_ts(end_ts))) |> 
+                             params = list(fmt_ts(build_from_NL - minutes(10L)))) |> 
+    mutate(issue = if_else(next_bc_start > bc_stop, "GAP", "OVERLAP"),
+           issue = paste0(issue, " between BC_STOP and NEXT_BC_START"))
+  
+  if (nrow(week_seq_err) > 0) {
+    flog.error("New week has gaps/overlaps", name = log_slug)
+    log_tibble(week_seq_err)
+    break
   }
+  # }
   
   # Exit from MCL
   break
