@@ -2,27 +2,25 @@
 # (Re-)build program clock for CZ or WJ
 # - - - - - - - - - - - - - - - - - - - - -
 
-# init ----
+# init & cfg ----
 pacman::p_load(tidyr, dplyr, stringr, readr, lubridate, fs, futile.logger, readxl, DBI, digest, optparse,
-               purrr, httr, jsonlite, yaml, ssh, googledrive, openxlsx, glue, uuid, RMariaDB)
+               purrr, httr, jsonlite, yaml, ssh, googlesheets4, # googledrive, 
+               openxlsx, glue, uuid, RMariaDB)
 
 config <- read_yaml("config.yaml")
-log_slug <- "clof"
-apf <- flog.appender(appender.file(config$log_appender_file_cz), log_slug)
-source("R/custom_functions.R", encoding = "UTF-8")
-
-flog.info("\n= = = = = = extend or revise the program clock = = = = = =", name = log_slug)
-
 TZ_AM <- "Europe/Amsterdam"
 SITE <- list(CONCERTZENDER = 1L, WORLD_OF_JAZZ = 2L)
 BUILD_TYPE <- list(EXTEND = 1L, REVISE  = 2L)
 R_DAYS_OF_WEEK <- list(MONDAY = 1L, THURSDAY = 4L) # R and SQL have different conventions
 fmt_ts <- stamp("1958-12-25 13:00:00", quiet = T, orders = "ymd HMS")
-
-# connect to CPNM-database ----
+log_slug <- "clof"
+apf <- flog.appender(appender.file(config$log_appender_file), log_slug)
+flog.info("\n= = = = = = broadcast clockfactory = = = = = =", name = log_slug)
+source("R/custom_functions.R", encoding = "UTF-8")
 source("R/cpnm_db_setup.R", encoding = "UTF-8")
 
-# usage: via RStudio run both NEW and REV, input both site and date. Via Powershell run NEW only, input just the site
+# fetch site & build_date ----
+# via RStudio run both EXTEND and REVISE, input both site and date. Via Powershell run EXTEND only, input just the site
 if (interactive() && requireNamespace("rstudioapi", quietly = TRUE) && rstudioapi::isAvailable()) {
   
   # prompt: build for which site?
@@ -33,8 +31,8 @@ if (interactive() && requireNamespace("rstudioapi", quietly = TRUE) && rstudioap
   dft_build_from_UTC <- next_bc_week_start(pm_site_id = site_id, pm_cpnm_db = con)
   dft_build_from_NL <- force_tz(dft_build_from_UTC$value, tzone = TZ_AM)  
   build_from_chr <- rstudioapi::showPrompt(title = "Build from date/time", 
-                                              message = "shown: start of next new week", 
-                                              default = fmt_ts(dft_build_from_NL))
+                                           message = "shown: start of next new week", 
+                                           default = fmt_ts(dft_build_from_NL))
   build_from_NL <- ymd_hms(build_from_chr, quiet = T, tz = TZ_AM)
   
   if (is.na(build_from_NL)) {
@@ -65,18 +63,34 @@ repeat {
   flog_bt <- names(BUILD_TYPE)[BUILD_TYPE == cur_build_type]
   flog.info(str_glue("Start = Thursday {fmt_ts(build_from_NL)}, build type {flog_bt}"), name = log_slug)
   
-  # . trigger GD-auth
-  with_drive_quiet(
-    drive_auth(cache = ".secrets", email = "cz.teamservice@gmail.com")
-  )
-  path_clockcatalogue <- "/home/lon/R_projects/cz_chelmsford/resources/klokcatalogus.xlsx"
-  with_drive_quiet(
-    # clockcatalogue from GD ----
-    drive_download(file = cz_get_url("wordpress_gidsinfo"), overwrite = T, path = path_clockcatalogue)
-  )
+  # load GD-sheets ----
+  tryCatch(
+    {
+      # . trigger GD-auth
+      gs4_auth(email = "cz.teamservice@gmail.com")
+      df_clockcatalogue_raw <- read_sheet(ss = config$url_wp_gidsinfo, sheet = "gids-info")
+      df_clockprofile_cz_raw <- read_sheet(ss = config$url_bc_clock_cz, sheet = "cz-data")
+      df_clockprofile_wj_raw <- read_sheet(ss = config$url_bc_clock_wj, sheet = "wj-data")
+      
+      # gd_wp_gidsinfo_slugs_raw <- read_sheet(ss = config$url_wp_gidsinfo, sheet = "nipperstudio_slugs")
+      # audio_locaties <- read_sheet(ss = config$url_audio_locaties, sheet = "audio_locaties")
+    },
+    error = function(e1) {
+      flog.error("Load error GD-sheet(s): %s", conditionMessage(e1), name = "nsbe_log")
+      break
+    })
+  
+  # with_drive_quiet(
+  #   drive_auth(cache = ".secrets", email = "cz.teamservice@gmail.com")
+  # )
+  # path_clockcatalogue <- "/home/lon/R_projects/cz_chelmsford/resources/klokcatalogus.xlsx"
+  # with_drive_quiet(
+  #   # clockcatalogue from GD ----
+  #   drive_download(file = cz_get_url("wordpress_gidsinfo"), overwrite = T, path = path_clockcatalogue)
+  # )
   
   # sheets as df ----
-  df_clockcatalogue_raw <- cz_extract_sheet(path_clockcatalogue, sheet_name = "gids-info")
+  # df_clockcatalogue_raw <- cz_extract_sheet(path_clockcatalogue, sheet_name = "gids-info")
   df_clockcatalogue <- df_clockcatalogue_raw |> rename(catalg_key = `key-modelrooster`,
                                                        titel_NL = `titel-NL`,
                                                        titel_EN = `titel-EN`,
@@ -96,7 +110,8 @@ repeat {
     drive_download(file = cz_get_url("modelklok_cz"), overwrite = T, path = path_clockprofile_cz, )
   )
   # . tidy clockprofile ----
-  df_clockprofile_cz_raw <- cz_extract_sheet(path_clockprofile_cz, sheet_name = "cz-data") |> rename(slot_key = slot) |> 
+  df_clockprofile_cz <- df_clockprofile_cz_raw |>
+    rename(slot_key = slot) |> 
     mutate(slot_minutes = as.integer(min), .keep = "unused", .after = slot_key)
     
   # validate slot/minutes columns in clockprofile
@@ -113,18 +128,20 @@ repeat {
     rename(catalg_key = `twee-wekelijks`) |> pivot_longer(cols = c(A, B), names_to = "cycle", values_to = "prod_type")
   mk_week.1 <- df_clockprofile_cz_raw |> filter(!is.na(`week 1`)) |> select(1:4, catalg_key = `week 1`, prod_type = t1) |> 
     mutate(block = 1L)
-  
-  # repair 'Thema' on CZ only
   mk_week.2 <- df_clockprofile_cz_raw |> filter(!is.na(`week 2`)) |> select(1:4, catalg_key = `week 2`, prod_type = t2) |> 
-                                      # - - - - Repair 'Thema' - - - - - - - - - - - #
-    mutate(block = 2L, slot_minutes = if_else(slot_key == "wo20", 120L, slot_minutes)) |> filter(slot_key != "wo21")
+    mutate(block = 2L)
   mk_week.3 <- df_clockprofile_cz_raw |> filter(!is.na(`week 3`)) |> select(1:4, catalg_key = `week 3`, prod_type = t3) |> 
     mutate(block = 3L)
   mk_week.4 <- df_clockprofile_cz_raw |> filter(!is.na(`week 4`)) |> select(1:4, catalg_key = `week 4`, prod_type = t4) |> 
-                                      # - - - - Repair 'Thema' - - - - - - - - - - - #
-    mutate(block = 4L, slot_minutes = if_else(slot_key == "wo20", 120L, slot_minutes)) |> filter(slot_key != "wo21")
+    mutate(block = 4L)
   mk_week.5 <- df_clockprofile_cz_raw |> filter(!is.na(`week 5`)) |> select(1:4, catalg_key = `week 5`, prod_type = t5) |> 
     mutate(block = 5L)
+
+  # repair 'Thema' on CZ only
+  if (site_id == SITE$CONCERTZENDER) {
+    mk_week.2 <- mk_week.2 |> mutate(slot_minutes = if_else(slot_key == "wo20", 120L, slot_minutes)) |> filter(slot_key != "wo21")
+    mk_week.4 <- mk_week.4 |> mutate(slot_minutes = if_else(slot_key == "wo20", 120L, slot_minutes)) |> filter(slot_key != "wo21")
+  }
   
   # build a clock ----
   bc_week_to <- if (nrow(prod_clock_set_db) > 0) max(prod_clock_set_db$bc_start) else build_from_NL + days(7L) - minutes(10L)
@@ -334,10 +351,6 @@ repeat {
   n_new_episodes_replay <- result$n_new_episodes_replay
   tib_clock_upd <- result$tib_clock_upd
   
-  # new week: check for gaps/overlaps ----
-  # if (cur_build_type == BUILD_TYPE$EXTEND) {
-    # begin_ts <- build_from_NL - minutes(10L)
-    # end_ts <- begin_ts + days(7L)
   week_seq_err <- dbGetQuery(conn = con, statement = read_file("SQL/check_for_gaps.sql"), 
                              # params = list(fmt_ts(begin_ts), fmt_ts(end_ts))) |> 
                              params = list(fmt_ts(build_from_NL - minutes(10L)))) |> 
@@ -349,7 +362,12 @@ repeat {
     log_tibble(week_seq_err)
     break
   }
-  # }
+  
+  # store clock extension ----
+  if (cur)
+  qfn_clock_rds <- paste0(config$clock_home_rds, stamp("19581225", quiet = T)(build_from_NL), ".RDS")
+  write_rds(tib_clock_upd, qfn_clock_rds)
+  flog.info(str_glue("Clock is stored: {qfn_clock_rds}."), name = "clof")
   
   # Exit from MCL
   break

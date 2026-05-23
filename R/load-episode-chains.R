@@ -1,6 +1,6 @@
 # = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = =
 # Shared script. Required objects from global env:
-# - max_ts_to_load
+# - GD already authenticated
 # - connection to cpnm-db: con
 #
 # Creates:
