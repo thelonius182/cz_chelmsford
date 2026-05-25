@@ -8,16 +8,7 @@
 # = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = =
 
 # load episode chain labels ----
-with_drive_quiet(
-  # . trigger GD-auth
-  drive_auth(cache = ".secrets", email = "cz.teamservice@gmail.com")
-)
-
-path_chains_cz <- "/home/lon/R_projects/cz_chelmsford/resources/chains_cz.xlsx"
-with_drive_quiet(
-  drive_download(file = cz_get_url("chains_cz"), overwrite = T, path = path_chains_cz)
-)
-raw_chains <- cz_extract_sheet(path_chains_cz, sheet_name = "wp_chains")
+raw_chains <- read_sheet(ss = config$gws_episode_chains, sheet = "data")
 clean_chains <- raw_chains |> filter(episode_chain != "#NONE#")
 
 # retrieve cpnm items ----

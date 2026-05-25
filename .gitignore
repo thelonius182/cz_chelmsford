@@ -36,3 +36,5 @@ rsconnect/
 .secrets
 config.yaml
 .positai
+.secrets-googlesheets4
+.secrets-salsa

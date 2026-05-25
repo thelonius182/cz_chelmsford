@@ -656,7 +656,7 @@ parse_args <- function(args = commandArgs(trailingOnly = TRUE)) {
   }
   
   if (length(args) %% 2 != 0) {
-    stop("Arguments should be supplied as --key value pairs.", call. = FALSE)
+    stop("Arguments should be supplied as `--key value`-pairs.", call. = FALSE)
   }
   
   for (i in seq(1, length(args), by = 2)) {

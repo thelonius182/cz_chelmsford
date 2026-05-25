@@ -1,14 +1,16 @@
-url_pfx: docs.google.com/spreadsheets/d/
-url_roosters: 1zt4xR9non3vIus4A9gVvk15HTMAunPBGywMOtAMI-0U
-url_wp_gidsinfo: 16DrvLEXi3mEa9AbSw28YBkYpCvyO1wXwBwaNi7HpBkA
-url_rooster_cz: 1zt4xR9non3vIus4A9gVvk15HTMAunPBGywMOtAMI-0U
-url_rooster_woj: 1LdBjK5hcpl8m1ZdcZujWWcsx7nLJPY8Gt69mjN8QS9A
-url_chains_cz: 1YnAlYp2JNhsYAx8tCPC5CjoFhxHoapyHpmPEzV-kUlk
-url_lacie: 1d8t8ZItwfBpdVrB9lyc83-F8NysdHRDpgnw-TJ9G2ng
+# url_pfx: docs.google.com/spreadsheets/d/
+# url_roosters: 1zt4xR9non3vIus4A9gVvk15HTMAunPBGywMOtAMI-0U
+# url_wp_gidsinfo: 16DrvLEXi3mEa9AbSw28YBkYpCvyO1wXwBwaNi7HpBkA
+# url_rooster_cz: 1zt4xR9non3vIus4A9gVvk15HTMAunPBGywMOtAMI-0U
+# url_rooster_woj: 1LdBjK5hcpl8m1ZdcZujWWcsx7nLJPY8Gt69mjN8QS9A
+# url_chains_cz: 1YnAlYp2JNhsYAx8tCPC5CjoFhxHoapyHpmPEzV-kUlk
+# url_lacie: 1d8t8ZItwfBpdVrB9lyc83-F8NysdHRDpgnw-TJ9G2ng
+# modelrooster_versie: "20250417"
+# url_klokcatalogus: 16DrvLEXi3mEa9AbSw28YBkYpCvyO1wXwBwaNi7HpBkA
 log_appender_file: /home/lon/Documents/Logs/clockfactory.log
+gws_clock_profiles: 1jEimy8btafmfIS6RgDBYqrU6Z1IP81no3CuczCLVj0I
+gws_clock_catalogue: 14VhV5FZrtMhLy9o7jmRtq_pyyctKZ0XHjZjnmtXvERE
+gws_episode_chains: 1goiDOzi7JkSYf5QZBw8nMZx7XGStG9iCeCzn-Tfu9dg
 clock_home_rds: /home/lon/Documents/broadcast-clocks/
-modelrooster_versie: "20250417"
-url_bc_clock_profiles: 1acLL4dtMvVJWeL9ueVNSA7Al3OgY08DfihXz1RkceOs
-url_klokcatalogus: 16DrvLEXi3mEa9AbSw28YBkYpCvyO1wXwBwaNi7HpBkA
 bc_week_start_hour_cz: 13
 bc_week_start_hour_wj: 14

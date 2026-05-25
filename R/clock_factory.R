@@ -16,11 +16,12 @@ fmt_ts <- stamp("1958-12-25 13:00:00", quiet = T, orders = "ymd HMS")
 log_slug <- "clof"
 apf <- flog.appender(appender.file(config$log_appender_file), log_slug)
 flog.info("\n= = = = = = broadcast clockfactory = = = = = =", name = log_slug)
+
 source("R/custom_functions.R", encoding = "UTF-8")
 source("R/cpnm_db_setup.R", encoding = "UTF-8")
 
 # fetch site & build_date ----
-# via RStudio run both EXTEND and REVISE, input both site and date. Via Powershell run EXTEND only, input just the site
+# via RStudio both EXTEND and REVISE are possible: input site & date. Via Powershell only EXTEND will run: input just the site
 if (interactive() && requireNamespace("rstudioapi", quietly = TRUE) && rstudioapi::isAvailable()) {
   
   # prompt: build for which site?
@@ -60,20 +61,18 @@ prod_clock_set_db <- prod_clock_set_db_raw |>
 # > Main Control Loop ----
 # read this as DO {...} WHILE(FALSE)
 repeat {
-  flog_bt <- names(BUILD_TYPE)[BUILD_TYPE == cur_build_type]
-  flog.info(str_glue("Start = Thursday {fmt_ts(build_from_NL)}, build type {flog_bt}"), name = log_slug)
+  flog_b <- names(BUILD_TYPE)[BUILD_TYPE == cur_build_type]
+  flog_s <- names(SITE)[SITE == site_id]
+  flog.info(str_glue("Start = Thursday {fmt_ts(build_from_NL)}, build type {flog_b}, site {flog_s}"), name = log_slug)
   
   # load GD-sheets ----
   tryCatch(
     {
       # . trigger GD-auth
-      gs4_auth(email = "cz.teamservice@gmail.com")
-      df_clockcatalogue_raw <- read_sheet(ss = config$url_wp_gidsinfo, sheet = "gids-info")
-      df_clockprofile_cz_raw <- read_sheet(ss = config$url_bc_clock_cz, sheet = "cz-data")
-      df_clockprofile_wj_raw <- read_sheet(ss = config$url_bc_clock_wj, sheet = "wj-data")
-      
-      # gd_wp_gidsinfo_slugs_raw <- read_sheet(ss = config$url_wp_gidsinfo, sheet = "nipperstudio_slugs")
-      # audio_locaties <- read_sheet(ss = config$url_audio_locaties, sheet = "audio_locaties")
+      options(gargle_oauth_cache = ".secrets-salsa")
+      gs4_auth(email = "cz.teamservice@concertzender.nl", scopes = "spreadsheets")
+      df_clockcatalogue_raw <- read_sheet(ss = config$gws_clock_catalogue, sheet = "data")
+      df_clockprofile_raw <- read_sheet(ss = config$gws_clock_profiles, sheet = names(SITE)[SITE == site_id])
     },
     error = function(e1) {
       flog.error("Load error GD-sheet(s): %s", conditionMessage(e1), name = "nsbe_log")
@@ -105,39 +104,40 @@ repeat {
     mutate(catalg_key = str_replace(catalg_key, "_(ma|di|wo|do|vr|za|zo)", ""))
   
   # clockprofile from GD ----
-  path_clockprofile_cz <- "/home/lon/R_projects/cz_chelmsford/resources/modelklok_cz.xlsx"
-  with_drive_quiet(
-    drive_download(file = cz_get_url("modelklok_cz"), overwrite = T, path = path_clockprofile_cz, )
-  )
+  # path_clockprofile_cz <- "/home/lon/R_projects/cz_chelmsford/resources/modelklok_cz.xlsx"
+  # with_drive_quiet(
+  #   drive_download(file = cz_get_url("modelklok_cz"), overwrite = T, path = path_clockprofile_cz, )
+  # )
   # . tidy clockprofile ----
-  df_clockprofile_cz <- df_clockprofile_cz_raw |>
+  df_clockprofile <- df_clockprofile_raw |>
     rename(slot_key = slot) |> 
     mutate(slot_minutes = as.integer(min), .keep = "unused", .after = slot_key)
     
   # validate slot/minutes columns in clockprofile
-  ccs <- check_circular_sequence(df_clockprofile_cz_raw |> select(slot_key, slot_minutes))
+  ccs <- check_circular_sequence(df_clockprofile |> select(slot_key, slot_minutes))
   
   if (nrow(ccs) > 0) {
     flog.error("slots/minutes in GD-clock profile are misaligned/non-circular; quiting this job.", name = log_slug)
     break
   }
   
-  mk_weekly <- df_clockprofile_cz_raw |> filter(!is.na(wekelijks)) |> select(1:6) |> 
+  mk_weekly <- df_clockprofile |> filter(!is.na(wekelijks)) |> select(1:6) |> 
     rename(catalg_key = wekelijks, prod_type = te)
-  mk_biweekly<- df_clockprofile_cz_raw |> filter(!is.na(`twee-wekelijks`)) |> select(1:3, 9:11) |> 
+  mk_biweekly<- df_clockprofile |> filter(!is.na(`twee-wekelijks`)) |> select(1:3, 9:11) |> 
     rename(catalg_key = `twee-wekelijks`) |> pivot_longer(cols = c(A, B), names_to = "cycle", values_to = "prod_type")
-  mk_week.1 <- df_clockprofile_cz_raw |> filter(!is.na(`week 1`)) |> select(1:4, catalg_key = `week 1`, prod_type = t1) |> 
+  mk_week.1 <- df_clockprofile |> filter(!is.na(`week 1`)) |> select(1:4, catalg_key = `week 1`, prod_type = t1) |> 
     mutate(block = 1L)
-  mk_week.2 <- df_clockprofile_cz_raw |> filter(!is.na(`week 2`)) |> select(1:4, catalg_key = `week 2`, prod_type = t2) |> 
+  mk_week.2 <- df_clockprofile |> filter(!is.na(`week 2`)) |> select(1:4, catalg_key = `week 2`, prod_type = t2) |> 
     mutate(block = 2L)
-  mk_week.3 <- df_clockprofile_cz_raw |> filter(!is.na(`week 3`)) |> select(1:4, catalg_key = `week 3`, prod_type = t3) |> 
+  mk_week.3 <- df_clockprofile |> filter(!is.na(`week 3`)) |> select(1:4, catalg_key = `week 3`, prod_type = t3) |> 
     mutate(block = 3L)
-  mk_week.4 <- df_clockprofile_cz_raw |> filter(!is.na(`week 4`)) |> select(1:4, catalg_key = `week 4`, prod_type = t4) |> 
+  mk_week.4 <- df_clockprofile |> filter(!is.na(`week 4`)) |> select(1:4, catalg_key = `week 4`, prod_type = t4) |> 
     mutate(block = 4L)
-  mk_week.5 <- df_clockprofile_cz_raw |> filter(!is.na(`week 5`)) |> select(1:4, catalg_key = `week 5`, prod_type = t5) |> 
+  mk_week.5 <- df_clockprofile |> filter(!is.na(`week 5`)) |> select(1:4, catalg_key = `week 5`, prod_type = t5) |> 
     mutate(block = 5L)
 
-  # repair 'Thema' on CZ only
+  # . repair 'Thema' ----
+  # repair 'Thema' on CZ only, assume it's in slots 'wo20' and 'wo21' of weeks 2 and 4
   if (site_id == SITE$CONCERTZENDER) {
     mk_week.2 <- mk_week.2 |> mutate(slot_minutes = if_else(slot_key == "wo20", 120L, slot_minutes)) |> filter(slot_key != "wo21")
     mk_week.4 <- mk_week.4 |> mutate(slot_minutes = if_else(slot_key == "wo20", 120L, slot_minutes)) |> filter(slot_key != "wo21")
@@ -363,11 +363,12 @@ repeat {
     break
   }
   
-  # store clock extension ----
-  if (cur)
-  qfn_clock_rds <- paste0(config$clock_home_rds, stamp("19581225", quiet = T)(build_from_NL), ".RDS")
-  write_rds(tib_clock_upd, qfn_clock_rds)
-  flog.info(str_glue("Clock is stored: {qfn_clock_rds}."), name = "clof")
+  # store an extension as .RDS too ----
+  if (cur_build_type == BUILD_TYPE$EXTEND) {
+    qfn_clock_rds <- paste0(config$clock_home_rds, flog_s, "-", stamp("19581225", quiet = T)(build_from_NL), ".RDS")
+    write_rds(tib_clock_upd, qfn_clock_rds)
+    flog.info(str_glue("Clock's dataframe is also stored as {qfn_clock_rds}."), name = "clof")
+  }
   
   # Exit from MCL
   break
