@@ -6,7 +6,7 @@ with broadcasts as (
                                  and e.deleted_at is null
     where cast(b.dates->>'$.start' as datetime) > ?
       and b.type = 'broadcast'
-      and b.site_id = 1
+      and b.site_id = ?
       and b.deleted_at is null
 ),
 ordered as (

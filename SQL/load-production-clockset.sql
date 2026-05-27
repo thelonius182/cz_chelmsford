@@ -1,4 +1,6 @@
-with ds1 as (
+with params as (select ? as bc_start,
+                       ? as tgt_site_id
+), ds1 as (
 select cast(b.dates->>'$.start' as datetime) as bc_start,
 	   cast(b.dates->>'$.end'   as datetime) as bc_stop,
 	   e.title_nl as bc_name,
@@ -8,27 +10,30 @@ select cast(b.dates->>'$.start' as datetime) as bc_start,
      case when JSON_TYPE(JSON_EXTRACT(e.content, '$.nl.content')) = 'ARRAY'
            AND JSON_LENGTH(JSON_EXTRACT(e.content, '$.nl.content')) > 0
           then 'Y' else 'N' end as ep_has_content
-from entries b join entries e on e.id = b.parent_id
+from entries b join params p
+               join entries e on e.id = b.parent_id
 							               and e.deleted_at is null
 							               and e.type = 'episode'
-							               and e.site_id = 1
-where cast(b.dates->>'$.start' as datetime) >= ?
+							               -- and e.site_id = ?
+where cast(b.dates->>'$.start' as datetime) >= p.bc_start
 	and b.deleted_at is null
 	and b.type = 'broadcast'
-	and b.site_id = 1
+	and b.site_id = p.tgt_site_id
 ), ds2 as (
 select ep_id, min(cast(b.dates->>'$.start' as datetime)) as first_bc
-from ds1 join entries b on b.parent_id = ep_id
+from ds1 join params p
+         join entries b on b.parent_id = ep_id
 	                     and b.deleted_at is null
 	                     and b.type = 'broadcast'
-					             and b.site_id = 1
+					             and b.site_id = p.tgt_site_id
 group by ep_id
 ), ds3 as (
 select ep_id, b.id as first_bc_id
-from ds2 join entries b on b.parent_id = ep_id
+from ds2 join params p
+         join entries b on b.parent_id = ep_id
 	                     and b.deleted_at is null
 	                     and b.type = 'broadcast'
-					             and b.site_id = 1
+					             and b.site_id = p.tgt_site_id
                        and cast(b.dates->>'$.start' as datetime) = first_bc
 )
 select ds1.bc_start,

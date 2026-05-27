@@ -8,6 +8,7 @@
 # = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = =
 
 # load episode chain labels ----
+# NB - `wp_title` in this sheet should be full NL-title (in lowercase)
 raw_chains <- read_sheet(ss = config$gws_episode_chains, sheet = "data")
 clean_chains <- raw_chains |> filter(episode_chain != "#NONE#")
 
@@ -28,7 +29,7 @@ qry <- "select parent_id,
                cast(dates->>'$.end'   as datetime) as dttm_stop
         from entries
         where deleted_at is null 
-          and site_id = 1
+          -- and site_id = 1
           and type = 'broadcast';"
 db_cpnm_items_raw_bc <- dbGetQuery(con, qry) 
 

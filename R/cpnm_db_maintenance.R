@@ -6,12 +6,8 @@ ins_result <-
                pm_descr_EN = "A dive into the archives to surprise listeners with hidden masterpieces and forgotten recordings.",
                pm_cpnm_db = con)
 
-# insert editor ----
-cpnm_edi_ins(pm_name_NL = 'Alexander Kraft van Ermel',
-             pm_cpnm_db = con)
-
-# CZ: append missing colofons ----
-for (cur_editor in tbl_w_ids_2_missing$redacteurs) {
+# fix missing editor(s) ----
+for (cur_editor in ds_missing$redacteurs) {
   cpnm_edi_ins(pm_name_NL = cur_editor, pm_cpnm_db = con)
 }
 

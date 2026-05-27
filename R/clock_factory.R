@@ -20,7 +20,7 @@ flog.info("\n= = = = = = broadcast clockfactory = = = = = =", name = log_slug)
 source("R/custom_functions.R", encoding = "UTF-8")
 source("R/cpnm_db_setup.R", encoding = "UTF-8")
 
-# fetch site & build_date ----
+# input site & build_date ----
 # via RStudio both EXTEND and REVISE are possible: input site & date. Via Powershell only EXTEND will run: input just the site
 if (interactive() && requireNamespace("rstudioapi", quietly = TRUE) && rstudioapi::isAvailable()) {
   
@@ -37,6 +37,8 @@ if (interactive() && requireNamespace("rstudioapi", quietly = TRUE) && rstudioap
   build_from_NL <- ymd_hms(build_from_chr, quiet = T, tz = TZ_AM)
   
   if (is.na(build_from_NL)) {
+    dbDisconnect(con)
+    close_tunnel(tunnel)
     cat(as.character(build_from_NL))
     stop("Invalid date. Expect 'ymd hms'-format", call. = FALSE)
   }
@@ -53,7 +55,7 @@ if (interactive() && requireNamespace("rstudioapi", quietly = TRUE) && rstudioap
 
 # Build production clock set ----
 prod_clock_set_db_raw <- dbGetQuery(conn = con, statement = read_file("SQL/load-production-clockset.sql"),
-                                    params = fmt_ts(build_from_NL))
+                                    params = list(fmt_ts(build_from_NL), site_id))
 prod_clock_set_db <- prod_clock_set_db_raw |>
   mutate(across(where(~ inherits(.x, "POSIXct")), ~ force_tz(.x, tzone = TZ_AM)),
          bc_name = str_replace(bc_name, "&amp;", "&"))
@@ -63,7 +65,7 @@ prod_clock_set_db <- prod_clock_set_db_raw |>
 repeat {
   flog_b <- names(BUILD_TYPE)[BUILD_TYPE == cur_build_type]
   flog_s <- names(SITE)[SITE == site_id]
-  flog.info(str_glue("Start = Thursday {fmt_ts(build_from_NL)}, build type {flog_b}, site {flog_s}"), name = log_slug)
+  flog.info(str_glue("Building from Thursday {fmt_ts(build_from_NL)}, type {flog_b} for site {flog_s}"), name = log_slug)
   
   # load GD-sheets ----
   tryCatch(
@@ -79,17 +81,7 @@ repeat {
       break
     })
   
-  # with_drive_quiet(
-  #   drive_auth(cache = ".secrets", email = "cz.teamservice@gmail.com")
-  # )
-  # path_clockcatalogue <- "/home/lon/R_projects/cz_chelmsford/resources/klokcatalogus.xlsx"
-  # with_drive_quiet(
-  #   # clockcatalogue from GD ----
-  #   drive_download(file = cz_get_url("wordpress_gidsinfo"), overwrite = T, path = path_clockcatalogue)
-  # )
-  
-  # sheets as df ----
-  # df_clockcatalogue_raw <- cz_extract_sheet(path_clockcatalogue, sheet_name = "gids-info")
+  # . tidy catalogue ----
   df_clockcatalogue <- df_clockcatalogue_raw |> rename(catalg_key = `key-modelrooster`,
                                                        titel_NL = `titel-NL`,
                                                        titel_EN = `titel-EN`,
@@ -100,18 +92,13 @@ repeat {
                                                        intro_NL = `std.samenvatting-NL`,
                                                        intro_EN = `std.samenvatting-EN`,
                                                        afbeelding = feat_img_ids,
-                                                       episode_chain = `episode-chain`) |> 
-    mutate(catalg_key = str_replace(catalg_key, "_(ma|di|wo|do|vr|za|zo)", ""))
+                                                       episode_chain = `episode-chain`) 
   
-  # clockprofile from GD ----
-  # path_clockprofile_cz <- "/home/lon/R_projects/cz_chelmsford/resources/modelklok_cz.xlsx"
-  # with_drive_quiet(
-  #   drive_download(file = cz_get_url("modelklok_cz"), overwrite = T, path = path_clockprofile_cz, )
-  # )
-  # . tidy clockprofile ----
+  # . tidy profile ----
   df_clockprofile <- df_clockprofile_raw |>
     rename(slot_key = slot) |> 
-    mutate(slot_minutes = as.integer(min), .keep = "unused", .after = slot_key)
+    mutate(slot_minutes = as.integer(min), .keep = "unused", .after = slot_key) |> 
+    filter(!is.na(slot_minutes))
     
   # validate slot/minutes columns in clockprofile
   ccs <- check_circular_sequence(df_clockprofile |> select(slot_key, slot_minutes))
@@ -142,6 +129,16 @@ repeat {
     mk_week.2 <- mk_week.2 |> mutate(slot_minutes = if_else(slot_key == "wo20", 120L, slot_minutes)) |> filter(slot_key != "wo21")
     mk_week.4 <- mk_week.4 |> mutate(slot_minutes = if_else(slot_key == "wo20", 120L, slot_minutes)) |> filter(slot_key != "wo21")
   }
+
+  # . repair 'Rec/Play' ----
+  # ... on WJ only, assume it's in slots 'do20' and 'do21' of weeks 2 and 4
+  #                            and slots 'wo18' and 'wo19' of weeks 1 and 3
+  if (site_id == SITE$WORLD_OF_JAZZ) {
+    mk_week.2 <- mk_week.2 |> mutate(slot_minutes = if_else(slot_key == "do20", 120L, slot_minutes)) |> filter(slot_key != "do21")
+    mk_week.4 <- mk_week.4 |> mutate(slot_minutes = if_else(slot_key == "do20", 120L, slot_minutes)) |> filter(slot_key != "do21")
+    mk_week.1 <- mk_week.1 |> mutate(slot_minutes = if_else(slot_key == "wo18", 120L, slot_minutes)) |> filter(slot_key != "wo19")
+    mk_week.3 <- mk_week.3 |> mutate(slot_minutes = if_else(slot_key == "wo18", 120L, slot_minutes)) |> filter(slot_key != "wo19")
+  }
   
   # build a clock ----
   bc_week_to <- if (nrow(prod_clock_set_db) > 0) max(prod_clock_set_db$bc_start) else build_from_NL + days(7L) - minutes(10L)
@@ -167,24 +164,24 @@ repeat {
   
   df_clock_cz_cur <- df_clock_cz_weekly |> bind_rows(df_clock_cz_biweekly) |> bind_rows(df_clock_cz_5_weeks) |> arrange(slot) |> 
     left_join(df_clockcatalogue, by = join_by(catalg_key)) |> 
-    mutate(hh = if_else(prod_type == "h", "H", hh),
+    mutate(src = if_else(prod_type == "h", "H", src),
            prod_type = if_else(prod_type == "h", "u", prod_type)) |> 
-    mutate(is_replay = if_else(is.na(hh), FALSE, TRUE)) |> 
-    select(-hh, -mac, -`dummy-1`, -slug) |> 
+    mutate(is_replay = if_else(is.na(src), FALSE, TRUE)) |> 
+    select(-src, -mac, -`dummy-1`, -slug) |> 
     pivot_longer(cols = c(genre_1, genre_2), names_to = NULL, values_to = "genre", values_drop_na = TRUE) |> 
     mutate(titel_nl_lc = str_to_lower(titel_NL))
   
   # validate catalogue ----
-  missing <- df_clock_cz_cur |> filter(is.na(titel_NL)) |> nrow()
+  df_missing <- df_clock_cz_cur |> filter(is.na(titel_NL))
   
-  if (missing > 0) {
+  if (nrow(df_missing) > 0) {
     flog.error("clock catalogue is incomplete (title); quiting this job.", name = log_slug)
     break
   }
   
-  missing <- df_clock_cz_cur |> filter(is.na(episode_chain)) |> nrow()
+  df_missing <- df_clock_cz_cur |> filter(is.na(episode_chain))
   
-  if (missing > 0) {
+  if (nrow(df_missing) > 0) {
     flog.error("clock catalogue is incomplete (episode chain); quiting this job.", name = log_slug)
     break
   }
@@ -201,9 +198,9 @@ repeat {
             ;"
   ty_genres <- dbGetQuery(con, query)
   df_clock_cz_cur.1 <- df_clock_cz_cur |> left_join(ty_genres, by = join_by(genre == genre_NL))
-  missing <- df_clock_cz_cur.1 |> filter(is.na(ty_genre_id)) |> nrow()
+  df_missing <- df_clock_cz_cur.1 |> filter(is.na(ty_genre_id))
   
-  if (missing > 0) {
+  if (nrow(df_missing) > 0) {
     flog.error("genres missing in the taxonomy; quiting this job.", name = log_slug)
     break
   }
@@ -222,9 +219,9 @@ repeat {
   df_clock_cz_cur.2 <- df_clock_cz_cur.1 |> left_join(ty_editors, by = join_by("redacteurs" == "editor_name"))
   
   # . check complete ----
-  missing <- df_clock_cz_cur.2 |> filter(is.na(ty_editor_id)) |> select(redacteurs) |> distinct() |> nrow()
+  df_missing <- df_clock_cz_cur.2 |> filter(is.na(ty_editor_id)) |> select(redacteurs) |> distinct()
   
-  if (missing > 0) {
+  if (nrow(df_missing) > 0) {
     flog.error("editors missing in the taxonomy; quiting this job.", name = log_slug)
     break
   }
@@ -244,9 +241,9 @@ repeat {
   }
   
   # . check complete ----
-  missing <- df_afb |> filter(is.na(image_id)) |> nrow()
+  df_missing <- df_afb |> filter(is.na(image_id))
   
-  if (missing > 0) {
+  if (nrow(df_missing) > 0) {
     flog.error("images are incomplete; quiting this job.", name = log_slug)
     break
   }
@@ -281,10 +278,10 @@ repeat {
   program_titles <- dbGetQuery(con, query)
   
   df_clock_cz_cur.4 <- df_clock_cz_cur.3 |> left_join(program_titles, by = join_by("titel_nl_lc"))
-  missing <- df_clock_cz_cur.4 |> filter(is.na(pgm_id)) |> nrow()
+  df_missing <- df_clock_cz_cur.4 |> filter(is.na(pgm_id))
   
   # . check complete ----
-  if (missing > 0) {
+  if (nrow(df_missing) > 0) {
     flog.error("programs missing in 'entries'; quiting this job.", name = log_slug)
     break
   }
@@ -292,6 +289,7 @@ repeat {
   # combine rev/prod ----
   df_clock_cz_cur.5 <- df_clock_cz_cur.4 |> 
     full_join(prod_clock_set_db, by = join_by(slot == bc_start))
+  
   # get the diffs ----
   df_clock_cz_cur.6 <- df_clock_cz_cur.5 |> 
     filter(titel_NL != bc_name | is.na(slot_key) | is.na(bc_name)) |> 
@@ -332,7 +330,6 @@ repeat {
   
   # . get episode chains ----
   chain_env <- new.env(parent = globalenv())
-  # chain_env$max_ts_to_load <- build_from_NL
   chain_env$con <- con
   source("R/load-episode-chains.R", local = chain_env)
   episode_chains <- chain_env$episode_chains
@@ -351,15 +348,21 @@ repeat {
   n_new_episodes_replay <- result$n_new_episodes_replay
   tib_clock_upd <- result$tib_clock_upd
   
+  # . look for gaps/overlaps ----
   week_seq_err <- dbGetQuery(conn = con, statement = read_file("SQL/check_for_gaps.sql"), 
                              # params = list(fmt_ts(begin_ts), fmt_ts(end_ts))) |> 
-                             params = list(fmt_ts(build_from_NL - minutes(10L)))) |> 
+                             params = list(fmt_ts(build_from_NL - minutes(10L)),
+                                           site_id)) |> 
+    mutate(across(where(~ inherits(.x, "POSIXct")), ~ force_tz(.x, tzone = TZ_AM))) |> 
+    add_bc_cols(ts_col = bc_stop) |> 
     mutate(issue = if_else(next_bc_start > bc_stop, "GAP", "OVERLAP"),
-           issue = paste0(issue, " between BC_STOP and NEXT_BC_START"))
+           issue = str_glue("{issue} at {fmt_ts(bc_stop)}"),
+           issue = paste0(issue, " (", slot_key, "-", bc_week_of_month, ")"))
+    
   
   if (nrow(week_seq_err) > 0) {
-    flog.error("New week has gaps/overlaps", name = log_slug)
-    log_tibble(week_seq_err)
+    flog.error("Gaps/overlaps found in database.", name = log_slug)
+    log_tibble(week_seq_err |> select(issue))
     break
   }
   
@@ -367,7 +370,7 @@ repeat {
   if (cur_build_type == BUILD_TYPE$EXTEND) {
     qfn_clock_rds <- paste0(config$clock_home_rds, flog_s, "-", stamp("19581225", quiet = T)(build_from_NL), ".RDS")
     write_rds(tib_clock_upd, qfn_clock_rds)
-    flog.info(str_glue("Clock's dataframe is also stored as {qfn_clock_rds}."), name = "clof")
+    flog.info(str_glue("Extended week is also stored as {qfn_clock_rds}."), name = "clof")
   }
   
   # Exit from MCL
