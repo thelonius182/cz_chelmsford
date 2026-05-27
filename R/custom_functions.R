@@ -440,91 +440,93 @@ clock2db <- function(pm_clock_tib, pm_created_at, pm_site_id, pm_db) {
 #      limit 1;", .con = pm_cpnm_db)
 # }
 
-derive_clock_key <- function(slot_ts) {
-  slot_week <- 1 + floor((day(slot_ts - 1) / 7))
-  wday_nr <- wday(slot_ts, week_start = 1)
+# usage: ts_NL <- ymd_hms("2026-05-28 01:09:25", tz = "Europe/Amsterdam")
+#        to_slot_key(ts_NL) # "do01-4"
+to_slot_key <- function(ts_NL) {
+  slot_week <- 1 + ((day(ts_NL) - 1) %/% 7) # not modulo (%%) but integer division (%/%)
   day_abbr <- c("ma", "di", "wo", "do", "vr", "za", "zo")
+  wday_nr <- wday(ts_NL, week_start = 1)
   slot_weekday <- day_abbr[wday_nr]
-  slot_hour <- hour(slot_ts)
+  slot_hour <- hour(ts_NL)
   paste0(slot_weekday, str_pad(slot_hour, width = 2, side = "left", pad = "0"), "-", slot_week)
 }
 
-append_chain_item <- function(pm_con,
-                              pm_label,
-                              pm_episode_entry_id,
-                              pm_clockfactory_job = NULL) {
-  dbWithTransaction(pm_con, {
-    chain_row <- dbGetQuery(
-      pm_con,
-      "
-      SELECT chain_id, next_position
-      FROM episode_chain
-      WHERE label = ?
-      FOR UPDATE
-      ",
-      params = list(pm_label)
-    )
-    
-    if (nrow(chain_row) == 0) {
-      dbExecute(
-        pm_con,
-        "
-        UPDATE episode_chain_seq
-        SET id = LAST_INSERT_ID(id + 1)
-        "
-      )
-      
-      chain_id <- dbGetQuery(
-        pm_con,
-        "SELECT LAST_INSERT_ID() AS chain_id"
-      )$chain_id[[1]]
-      
-      position <- 1L
-      
-      dbExecute(
-        pm_con,
-        "
-        INSERT INTO episode_chain (chain_id, label, next_position)
-        VALUES (?, ?, 2)
-        ",
-        params = list(chain_id, pm_label)
-      )
-    } else {
-      chain_id <- chain_row$chain_id[[1]]
-      position <- chain_row$next_position[[1]]
-      
-      dbExecute(
-        pm_con,
-        "
-        UPDATE episode_chain
-        SET next_position = next_position + 1
-        WHERE chain_id = ?
-        ",
-        params = list(chain_id)
-      )
-    }
-    
-    dbExecute(
-      pm_con,
-      "
-      INSERT INTO episode_chain_item
-        (chain_id, position, episode_entry_id, clockfactory_job)
-      VALUES (?, ?, ?, ?)
-      ",
-      params = list(
-        chain_id,
-        position,
-        pm_episode_entry_id,
-        pm_clockfactory_job
-      )
-    )
-    
-    tibble(
-      chain_id = chain_id,
-      position = position
-    )
-  })
-}
+# append_chain_item <- function(pm_con,
+#                               pm_label,
+#                               pm_episode_entry_id,
+#                               pm_clockfactory_job = NULL) {
+#   dbWithTransaction(pm_con, {
+#     chain_row <- dbGetQuery(
+#       pm_con,
+#       "
+#       SELECT chain_id, next_position
+#       FROM episode_chain
+#       WHERE label = ?
+#       FOR UPDATE
+#       ",
+#       params = list(pm_label)
+#     )
+#     
+#     if (nrow(chain_row) == 0) {
+#       dbExecute(
+#         pm_con,
+#         "
+#         UPDATE episode_chain_seq
+#         SET id = LAST_INSERT_ID(id + 1)
+#         "
+#       )
+#       
+#       chain_id <- dbGetQuery(
+#         pm_con,
+#         "SELECT LAST_INSERT_ID() AS chain_id"
+#       )$chain_id[[1]]
+#       
+#       position <- 1L
+#       
+#       dbExecute(
+#         pm_con,
+#         "
+#         INSERT INTO episode_chain (chain_id, label, next_position)
+#         VALUES (?, ?, 2)
+#         ",
+#         params = list(chain_id, pm_label)
+#       )
+#     } else {
+#       chain_id <- chain_row$chain_id[[1]]
+#       position <- chain_row$next_position[[1]]
+#       
+#       dbExecute(
+#         pm_con,
+#         "
+#         UPDATE episode_chain
+#         SET next_position = next_position + 1
+#         WHERE chain_id = ?
+#         ",
+#         params = list(chain_id)
+#       )
+#     }
+#     
+#     dbExecute(
+#       pm_con,
+#       "
+#       INSERT INTO episode_chain_item
+#         (chain_id, position, episode_entry_id, clockfactory_job)
+#       VALUES (?, ?, ?, ?)
+#       ",
+#       params = list(
+#         chain_id,
+#         position,
+#         pm_episode_entry_id,
+#         pm_clockfactory_job
+#       )
+#     )
+#     
+#     tibble(
+#       chain_id = chain_id,
+#       position = position
+#     )
+#   })
+# }
 
 lookup_replay <- function(pm_chains,
                           pm_cur_chain,

@@ -1,5 +1,5 @@
 date_series <- function(
-    start_date,
+    earliest_date,
     rules,
     n = 20,
     tz = "Europe/Amsterdam"
@@ -37,15 +37,15 @@ date_series <- function(
     all(parsed_rules$WOM >= 1 & parsed_rules$WOM <= 5)
   )
   
-  start_datetime <- ymd_hms(start_date, tz = tz, quiet = TRUE)
+  min_start_ts <- ymd_hms(earliest_date, tz = tz, quiet = TRUE)
   
-  if (is.na(start_datetime)) {
-    start_datetime <- as_datetime(as_date(start_date), tz = tz)
+  if (is.na(min_start_ts)) {
+    min_start_ts <- as_datetime(as_date(earliest_date), tz = tz)
   }
   
   candidate_dates <- seq.Date(
-    from = as_date(start_datetime),
-    to = as_date(start_datetime) + years(5),
+    from = as_date(min_start_ts),
+    to = as_date(min_start_ts) + years(5),
     by = "day"
   )
   
@@ -65,15 +65,15 @@ date_series <- function(
         tz = tz
       )
     ) |>
-    filter(datetime >= start_datetime) |>
+    filter(datetime >= min_start_ts) |>
     arrange(datetime) |>
     slice_head(n = n) |>
     select(datetime, date, rule, WD, HH, WOM)
 }
 
-result <- date_series(start_date = "2026-05-30", rules = c("vr19-*")) |> 
-  mutate(slot = paste0(str_extract(rule, "^.{5}"), WOM)) |> 
-  select(datetime)
+result <- date_series(earliest_date = "2026-05-30", rules = c("vr19-*", "do00-3")) |> 
+  mutate(slot_key = paste0(str_extract(rule, "^.{5}"), WOM)) |> 
+  select(datetime, slot_key, rule)
 
-result |>mutate(datetime = format(datetime, "%Y-%m-%d %H:%M:%S")) |>
+result |>mutate(datetime = fmt_ts(datetime)) |>
   clipr::write_clip()
