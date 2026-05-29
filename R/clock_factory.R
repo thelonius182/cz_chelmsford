@@ -77,7 +77,7 @@ repeat {
       df_clockprofile_raw <- read_sheet(ss = config$gws_clock_profiles, sheet = names(SITE)[SITE == site_id])
     },
     error = function(e1) {
-      flog.error("Load error GD-sheet(s): %s", conditionMessage(e1), name = "nsbe_log")
+      flog.error("Load error GD-sheet(s): %s", conditionMessage(e1), name = log_slug)
       break
     })
   
@@ -370,7 +370,7 @@ repeat {
   if (cur_build_type == BUILD_TYPE$EXTEND) {
     qfn_clock_rds <- paste0(config$clock_home_rds, flog_s, "-", stamp("19581225", quiet = T)(build_from_NL), ".RDS")
     write_rds(tib_clock_upd, qfn_clock_rds)
-    flog.info(str_glue("Extended week is also stored as {qfn_clock_rds}."), name = "clof")
+    flog.info(str_glue("Extended week is also stored as {qfn_clock_rds}."), name = log_slug)
   }
   
   # Exit from MCL

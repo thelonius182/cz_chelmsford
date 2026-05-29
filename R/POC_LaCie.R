@@ -1,8 +1,7 @@
 pacman::p_load(DBI, RSQLite, fs, dplyr, stringr, readr)
 
-
-has_valid_date_prefix <- function(file_names) {
-  date_part <- str_sub(file_names, 1, 8)
+has_valid_date_prefix <- function(qfn) {
+  date_part <- str_sub(file_name, 1, 8)
   parsed <- ymd(date_part, quiet = TRUE)
   
   str_detect(file_names, "^\\d{8}\\D") &
@@ -10,38 +9,25 @@ has_valid_date_prefix <- function(file_names) {
     format(parsed, "%Y%m%d") == date_part
 }
 
-# get_bc_date <- function(file_names) {
-#   date_part <- str_sub(file_names, 1, 8)
-#   ymd(date_part, quiet = TRUE)
-# }
-
-get_chain <- function(qfn, root_flr) {
-  path_dir(path_rel(qfn, root_flr))
+scan_lacies <- function(root) {
+  
+  dir_info(path = root,
+           recurse = TRUE,
+           type = "file",
+           fail = FALSE) |>
+    filter(extension %in% c("wav", "aif", "aiff", "m4a") & has_valid_date_prefix(file_name)) |> 
+    mutate(chain = LACIE_CHAINS[get_chain(qfn, root)]) |> 
+    group_by(chain) |> 
+    mutate(pos = row_number()) |> 
+    ungroup() 
+    mutate(qfn = make_relative_path(path, lacie_root),
+           extension = str_to_lower(path_ext(path))) |>
+    transmute(qfn = as.character(path),
+              fn = path_file(path)) |>
+    arrange(qfn)
 }
 
 sync_playlist_stack <- function(con_sqlite, lacie_root, audio_extensions) {
-  
-  if (!dir_exists(lacie_root)) {
-    stop("Remote folder is not reachable: ", lacie_root)
-  }
-  
-  current_scan <- dir_info(
-    path = lacie_root,
-    recurse = TRUE,
-    type = "file",
-    fail = FALSE
-  ) |>
-    mutate(
-      qfn = make_relative_path(path, lacie_root),
-      extension = str_to_lower(path_ext(path))
-    ) |>
-    filter(extension %in% audio_extensions) |>
-    transmute(
-      qfn,
-      full_path = as.character(path),
-      file_name = path_file(path)
-    ) |>
-    arrange(qfn)
   
   dbWithTransaction(con_sqlite, {
     
@@ -62,7 +48,7 @@ sync_playlist_stack <- function(con_sqlite, lacie_root, audio_extensions) {
                              c.qfn
                            FROM current_scan c
                            WHERE c.qfn NOT IN (SELECT qfn FROM lacie_stack)
-                           ORDER BY c.relative_path")
+                           ORDER BY c.qfn")
     
     dbExecute(con_sqlite, "DROP TABLE current_scan")
   })
@@ -75,13 +61,13 @@ compact_stack_positions <- function(con_sqlite) {
   dbWithTransaction(con_sqlite, {
     
     dbExecute(con_sqlite, "CREATE TEMPORARY TABLE compacted_stack AS
-                       SELECT
-                         ROW_NUMBER() OVER (ORDER BY position) AS position,
-                         qfn,
-                         full_path,
-                         file_name
-                       FROM lacie_stack
-                       ORDER BY position")
+                               SELECT
+                                 ROW_NUMBER() OVER (ORDER BY position) AS position,
+                                 qfn,
+                                 full_path,
+                                 file_name
+                               FROM lacie_stack
+                               ORDER BY position")
     
     dbExecute(con_sqlite, "DELETE FROM lacie_stack")
     
@@ -89,11 +75,11 @@ compact_stack_positions <- function(con_sqlite) {
                                              qfn,
                                              full_path,
                                              file_name)
-                    SELECT position,
-                           qfn,
-                           full_path,
-                           file_name
-                    FROM compacted_stack")
+                           SELECT position,
+                                  qfn,
+                                  full_path,
+                                  file_name
+                           FROM compacted_stack")
     
     dbExecute(con_sqlite, "DROP TABLE compacted_stack")
   })
@@ -101,8 +87,8 @@ compact_stack_positions <- function(con_sqlite) {
 
 stack_needs_compaction <- function(con_sqlite) {
   stats <- dbGetQuery(con_sqlite, "SELECT COUNT(*) AS n,
-                                   COALESCE(MIN(position), 0) AS min_position
-                            FROM lacie_stack")
+                                          COALESCE(MIN(position), 0) AS min_position
+                                   FROM lacie_stack")
   
   stats$n > 0 && stats$min_position > stats$n
 }
@@ -110,24 +96,17 @@ stack_needs_compaction <- function(con_sqlite) {
 # - - - - - - - - - - - - - - - - 
 #     ---- >> MAIN << ----
 # - - - - - - - - - - - - - - - - 
-
-
-validated_scan_list <- scan_list |> 
-  filter(has_valid_date_prefix(file_name)) |> 
-  mutate(chain = LACIE_CHAINS[get_chain(full_path, lacie_root)]) |> 
-  group_by(chain) |> 
-  mutate(pos = row_number()) |> 
-  ungroup() |> 
-  select(-relative_path)
-
 lacie_root <- "/mnt/muw/WoJ-hh"
-audio_extensions <- c("wav", "aif", "aiff", "m4a")
+
+if (!dir_exists(lacie_root)) {
+  stop("Remote folder is not reachable: ", lacie_root)
+}
+
 LACIE_CHAINS <- list(
   "Door de Mazen van het Net" = "MAZEN",
   "Duke Ellington" = "DUKE",
   "Groove and Grease" = "GROOVE"
 )
-LACIE_CHAINS$`Door de Mazen van het Net`
 
 con_sqlite <- dbConnect(SQLite(), "resources/lacie.sqlite")
 on.exit(dbDisconnect(con_sqlite), add = TRUE)
