@@ -64,7 +64,7 @@ date_series <- function(earliest_date, slots, n = 20, tz = "Europe/Amsterdam") {
 #     ---- >> MAIN << ----
 # - - - - - - - - - - - - - - - - 
 
-# which
+# which slots & titles
 cur_slots <- c(
   "vr20-*", 
   "do14-4"
@@ -111,4 +111,4 @@ woj_rows <- date_series(earliest_date = nxt20_start_NL, slots = cur_slots) |>
   select(band, uitzending = datetime, titel = title)
 
 # upload to GD ----
-ss <- sheet_append(ss = montage_woj_URL, sheet = montage_woj_sheet, data = woj_rows)
+sapp <- sheet_append(ss = montage_woj_URL, sheet = montage_woj_sheet, data = woj_rows)

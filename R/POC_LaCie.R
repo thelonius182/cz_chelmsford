@@ -1,30 +1,32 @@
-pacman::p_load(DBI, RSQLite, fs, dplyr, stringr, readr)
+pacman::p_load(DBI, RSQLite, fs, dplyr, stringr, readr, lubridate, purrr, uuid)
 
-has_valid_date_prefix <- function(qfn) {
-  date_part <- str_sub(file_name, 1, 8)
+has_valid_date_prefix <- function(fn) {
+  date_part <- str_sub(fn, 1, 8)
   parsed <- ymd(date_part, quiet = TRUE)
   
-  str_detect(file_names, "^\\d{8}\\D") &
+  str_detect(fn, "^\\d{8}\\D") &
     !is.na(parsed) &
     format(parsed, "%Y%m%d") == date_part
 }
 
-scan_lacies <- function(root) {
-  
-  dir_info(path = root,
-           recurse = TRUE,
-           type = "file",
-           fail = FALSE) |>
-    filter(extension %in% c("wav", "aif", "aiff", "m4a") & has_valid_date_prefix(file_name)) |> 
-    mutate(chain = LACIE_CHAINS[get_chain(qfn, root)]) |> 
-    group_by(chain) |> 
-    mutate(pos = row_number()) |> 
-    ungroup() 
-    mutate(qfn = make_relative_path(path, lacie_root),
-           extension = str_to_lower(path_ext(path))) |>
-    transmute(qfn = as.character(path),
-              fn = path_file(path)) |>
-    arrange(qfn)
+get_chain <- function(pm_qfn, pm_root) {
+  path_dir(path_rel(pm_qfn, pm_root))  
+}
+
+scan_fs <- function(root) {
+  dir_ls(root, recurse = TRUE, type = "file") |>
+    tibble(qfn = _) |>
+    mutate(fn = path_file(qfn)) |> 
+    filter(str_to_lower(path_ext(fn)) %in% c("wav", "aif", "aiff", "m4a") & 
+             has_valid_date_prefix(fn)) |> 
+    mutate(lacie_dir = path_dir(path_rel(qfn, root)),
+           lid = UUIDgenerate(n = n(), use.time = FALSE)) |> 
+    inner_join(lacie_chains, by = join_by(lacie_dir)) |> 
+    group_by(chain) |>
+    mutate(pos = row_number()) |>
+    ungroup() |>
+    arrange(chain, pos) |> 
+    select(lid, chain, pos, fn)
 }
 
 sync_playlist_stack <- function(con_sqlite, lacie_root, audio_extensions) {
@@ -102,20 +104,15 @@ if (!dir_exists(lacie_root)) {
   stop("Remote folder is not reachable: ", lacie_root)
 }
 
-LACIE_CHAINS <- list(
-  "Door de Mazen van het Net" = "MAZEN",
-  "Duke Ellington" = "DUKE",
-  "Groove and Grease" = "GROOVE"
+lacie_chains <- tibble(
+  lacie_dir = c("Door de Mazen van het Net", "Duke Ellington", "Groove and Grease"),
+  chain     = c("LC_MAZEN",                  "LC_DUKE",        "LC_GROOVE")
 )
 
+fs_lacies <- scan_fs(lacie_root)
 con_sqlite <- dbConnect(SQLite(), "resources/lacie.sqlite")
 on.exit(dbDisconnect(con_sqlite), add = TRUE)
 
-dbExecute(con_sqlite, "create table if not exists lacie_stack (id    binary(16) primary key,   
-                                                               chain text not null,
-                                                               pos   integer not null,
-                                                               qfn   text not null)"
-)
 
 "SELECT position, qfn, full_path
 FROM lacie_stack

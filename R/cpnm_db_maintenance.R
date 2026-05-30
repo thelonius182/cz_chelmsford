@@ -194,3 +194,27 @@ sav_tbl <- tibble(
 tib_episode_catlg_keys <- episode_chains |> inner_join(df_clockcatalogue, by = join_by(episode_chain)) |> 
   select(ep_id = episode_entry_id, ep_catkey = catalg_key) 
 sql_sts <- dbAppendTable(conn = con, name = "episode_catlg_keys", value = tib_episode_catlg_keys)
+
+con_sqlite <- dbConnect(SQLite(), "resources/lacie.sqlite")
+on.exit(dbDisconnect(con_sqlite), add = TRUE)
+
+dbExecute(con_sqlite, "create table lacie_stack (lid   text    primary key,
+                                                 chain text    not null,
+                                                 fn    text    not null,
+                                                 pos   integer not null,
+                                                 unique (chain, fn));"
+)
+
+dbAppendTable(conn = con_sqlite, name = "lacie_stack", value = fs_lacies)
+db_lacies <- dbGetQuery(con_sqlite, "select * from lacie_stack;")
+
+cur_lacie <- db_lacies |> 
+  filter(chain == "LC_MAZEN") |> 
+  mutate(cur_rnk = row_number(),
+         nxt_pos = max(pos) + 1
+  ) |> 
+  filter(cur_rnk == 1) 
+nxt_lacie <- cur_lacie |> select(lid, pos = nxt_pos)
+db_lacies <- db_lacies |> 
+  rows_update(by = "lid", y = nxt_lacie) |> 
+  arrange(chain, pos)
