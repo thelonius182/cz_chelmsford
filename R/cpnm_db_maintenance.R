@@ -208,13 +208,15 @@ dbExecute(con_sqlite, "create table lacie_stack (lid   text    primary key,
 dbAppendTable(conn = con_sqlite, name = "lacie_stack", value = fs_lacies)
 db_lacies <- dbGetQuery(con_sqlite, "select * from lacie_stack;")
 
-cur_lacie <- db_lacies |> 
-  filter(chain == "LC_MAZEN") |> 
+top_lacies <- db_lacies |> 
+  group_by(chain) |> 
   mutate(cur_rnk = row_number(),
-         nxt_pos = max(pos) + 1
-  ) |> 
+         nxt_pos = max(pos) + cur_rnk) |> 
+  ungroup() |> 
   filter(cur_rnk == 1) 
-nxt_lacie <- cur_lacie |> select(lid, pos = nxt_pos)
-db_lacies <- db_lacies |> 
-  rows_update(by = "lid", y = nxt_lacie) |> 
+
+bot_lacies <- top_lacies |> 
+  select(lid, pos = nxt_pos)
+db_lacies_upd <- db_lacies |> 
+  rows_update(by = "lid", y = bot_lacies) |> 
   arrange(chain, pos)
