@@ -3,6 +3,7 @@
 # - tib_clock:      sic
 # - con:            connection to cpnm-db
 # - episode_chains: sic
+# - lacie_chains:   sic
 # - log_slug:       name/slug of logfile 
 # - cur_site:       sic
 # - TZ_AM:          timezone Europe/Amsterdan
@@ -11,6 +12,7 @@
 # - n_new_episodes_fresh
 # - n_new_episodes_replay
 # - tib_clock_upd
+# - lacie_chains
 # = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = 
 
 # > add new to database ----
@@ -114,5 +116,6 @@ if (n > 0) {
 result <- list(
   n_new_episodes_fresh  = nrow(new_episodes_fresh),
   n_new_episodes_replay = nrow(new_episodes_replay),
-  tib_clock_upd = tib_clock
+  tib_clock_upd = tib_clock,
+  lacie_chains_upd = lacie_chains
 )

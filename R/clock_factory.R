@@ -3,9 +3,10 @@
 # - - - - - - - - - - - - - - - - - - - - -
 
 # init & cfg ----
-pacman::p_load(tidyr, dplyr, stringr, readr, lubridate, fs, futile.logger, readxl, DBI, digest, optparse,
-               purrr, httr, jsonlite, yaml, ssh, googlesheets4, # googledrive, 
-               openxlsx, glue, uuid, RMariaDB)
+pacman::p_load(tidyr, dplyr, stringr, readr, lubridate, fs, futile.logger, DBI, digest, optparse,
+               purrr, httr, jsonlite, yaml, ssh, googlesheets4, glue, uuid, RMariaDB, RSQLite
+               # openxlsx, readxl, 
+)
 
 config <- read_yaml("config.yaml")
 TZ_AM <- "Europe/Amsterdam"
@@ -322,7 +323,7 @@ repeat {
     sql_sts <- dbExecute(con, sql_stmt)
   }
   
-  # . add diff ep's + broadcasts ----
+  # . add diff ep's + bc's ----
   # these are the episodes and broadcasts missing in prod-db, both fresh and replay
   ep_bc_to_add <- df_clock_cz_cur.6 |> filter(!is.na(slot_key)) |> 
     select(slot:pgm_id) |> 
@@ -334,6 +335,13 @@ repeat {
   source("R/load-episode-chains.R", local = chain_env)
   episode_chains <- chain_env$episode_chains
   
+  # . get LaCie chains ----
+  source("R/LaCie_tools.R", encoding = "UTF-8")
+  con_sqlite <- dbConnect(SQLite(), "resources/lacie.sqlite")
+  fs_lacies <- scan_fs(lacie_root)
+  sdb <- sync_db(con = con_sqlite, fs = fs_lacies)
+  db_lacies <- dbGetQuery(con_sqlite, "select * from lacie_stack order by chain, pos;")
+  
   # . update cpnm database ----
   upd_cpnm_env <- new.env(parent = globalenv())
   upd_cpnm_env$tib_clock <- ep_bc_to_add
@@ -342,11 +350,13 @@ repeat {
   upd_cpnm_env$log_slug <- log_slug
   upd_cpnm_env$cur_site <- site_id
   upd_cpnm_env$TZ_AM <- TZ_AM
+  upd_cpnm_env$lacie_chains <- db_lacies
   source("R/update_cpnm.R", local = upd_cpnm_env)
   result <- upd_cpnm_env$result
   n_new_episodes_fresh <- result$n_new_episodes_fresh
   n_new_episodes_replay <- result$n_new_episodes_replay
   tib_clock_upd <- result$tib_clock_upd
+  db_lacies_upd <- result$lacie_chains_upd
   
   # . look for gaps/overlaps ----
   week_seq_err <- dbGetQuery(conn = con, statement = read_file("SQL/check_for_gaps.sql"), 
@@ -358,13 +368,16 @@ repeat {
     mutate(issue = if_else(next_bc_start > bc_stop, "GAP", "OVERLAP"),
            issue = str_glue("{issue} at {fmt_ts(bc_stop)}"),
            issue = paste0(issue, " (", slot_key, "-", bc_week_of_month, ")"))
-    
   
   if (nrow(week_seq_err) > 0) {
     flog.error("Gaps/overlaps found in database.", name = log_slug)
     log_tibble(week_seq_err |> select(issue))
     break
   }
+  
+  # store modified LaCie chains ----
+  dbe <- dbExecute(con_sqlite, "delete from lacie_stack")
+  dba <- dbAppendTable(con_sqlite, name = "lacie_stack", value = db_lacies_upd)
   
   # store an extension as .RDS too ----
   if (cur_build_type == BUILD_TYPE$EXTEND) {
@@ -382,3 +395,4 @@ flog.info("job finished", name = log_slug)
 # Cleanup ----
 dbDisconnect(con)
 close_tunnel(tunnel)
+dbDisconnect(con_sqlite)

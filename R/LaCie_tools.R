@@ -1,4 +1,4 @@
-pacman::p_load(DBI, RSQLite, fs, dplyr, stringr, readr, lubridate, purrr, uuid)
+# pacman::p_load(DBI, RSQLite, fs, dplyr, stringr, readr, lubridate, purrr, uuid)
 
 has_valid_date_prefix <- function(fn) {
   
@@ -27,7 +27,9 @@ scan_fs <- function(root) {
     select(chain, pos, fn, lid)
 }
 
-sync_db <- function(con, fs, db) {
+sync_db <- function(con, fs) {
+  
+  db <- dbGetQuery(con, "select * from lacie_stack;")
   
   dbWithTransaction(con, {
     
@@ -43,9 +45,11 @@ sync_db <- function(con, fs, db) {
     any_ins <- fs |> 
       rename_with(~ paste0("fs_", .x)) |> 
       left_join(db, by = join_by(fs_chain == chain, fs_fn == fn)) |> 
+      mutate(pos = coalesce(pos, 0L)) |> 
+      arrange(fs_chain, pos, fs_pos) |> 
       group_by(fs_chain) |> 
       mutate(cur_rnk = row_number(),
-             bot_pos = coalesce(max(pos, na.rm = TRUE), 0) + cur_rnk) |> 
+             bot_pos = max(pos) + cur_rnk) |> 
       ungroup() |> 
       filter(is.na(lid))
     
@@ -94,11 +98,3 @@ lacie_chains <- tibble(
                 "L_DUKEE",
                 "L_GROOV")
 )
-
-con_sqlite <- dbConnect(SQLite(), "resources/lacie.sqlite")
-on.exit(dbDisconnect(con_sqlite), add = TRUE)
-
-fs_lacies <- scan_fs(lacie_root)
-db_lacies <- dbGetQuery(con_sqlite, "select * from lacie_stack;")
-sync_db(con = con_sqlite, fs = fs_lacies, db = db_lacies)
-

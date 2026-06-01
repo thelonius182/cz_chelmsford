@@ -206,7 +206,7 @@ dbExecute(con_sqlite, "create table lacie_stack (lid   text    primary key,
 )
 
 dbAppendTable(conn = con_sqlite, name = "lacie_stack", value = fs_lacies)
-db_lacies <- dbGetQuery(con_sqlite, "select * from lacie_stack;")
+db_lacies <- dbGetQuery(con_sqlite, "select * from lacie_stack order by chain, pos;")
 
 top_lacies <- db_lacies |> 
   group_by(chain) |> 
@@ -215,8 +215,5 @@ top_lacies <- db_lacies |>
   ungroup() |> 
   filter(cur_rnk == 1) 
 
-bot_lacies <- top_lacies |> 
-  select(lid, pos = nxt_pos)
-db_lacies_upd <- db_lacies |> 
-  rows_update(by = "lid", y = bot_lacies) |> 
-  arrange(chain, pos)
+bot_lacies <- top_lacies |> select(lid, pos = nxt_pos)
+db_lacies_upd <- db_lacies |> rows_update(by = "lid", y = bot_lacies) |> arrange(chain, pos)

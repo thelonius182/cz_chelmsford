@@ -723,3 +723,16 @@ parse_args <- function(args = commandArgs(trailingOnly = TRUE)) {
 fetch_broadcasts <- function(pm_con) {
   dbGetQuery(pm_con, "select * from broadcasts where status == 'published'")
 }
+
+fetch_lacie <- function(pm_chain, pm_lacie_chains) {
+  
+  lacie <- pm_lacie_chains |> group_by(chain) |> 
+    mutate(cur_rnk = row_number(),
+           nxt_pos = max(pos) + cur_rnk) |> ungroup() |> 
+    filter(cur_rnk == 1 & chain == pm_chain) 
+  
+  bot_lacie <- lacie |> select(lid, pos = nxt_pos)
+  lacie_chains_upd <- pm_lacie_chains |> rows_update(by = "lid", y = bot_lacie) |> arrange(chain, pos)
+  
+  list(lacie_chains_upd, lacie)
+}
