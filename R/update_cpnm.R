@@ -74,18 +74,26 @@ if (n > 0) {
   prep_episode_entry_id <- character(n)
   
   for (rn in seq_len(n)) {
-    prep_episode_entry_id[rn] <- lookup_replay(pm_chains = episode_chains,
-                                               pm_cur_chain = new_episodes_replay$episode_chain[rn],
-                                               pm_replay_target_slot = new_episodes_replay$slot[rn],
-                                               pm_bc_type = new_episodes_replay$uitzendtype[rn],
-                                               pm_nipperstudio = new_episodes_replay$nipper_mogelijk[rn],
-                                               pm_replay_week_start = bc_week_start(pm_slot_start = new_episodes_replay$slot[rn], 
-                                                                                    pm_site_id = cur_site))
+    
+    prep_episode_entry_id[rn] <- if (flog_s == "WORLD_OF_JAZZ" && new_episodes_replay$prod_type[rn] == PROD_TYPE$LACIE) {
+                                         fetch_lacie(pm_chain = new_episodes_replay$episode_chain[rn],
+                                                     pm_lacie_chains = lacie_chains)
+                                 } else {
+                                   lookup_replay(pm_chains = episode_chains,
+                                                 pm_cur_chain = new_episodes_replay$episode_chain[rn],
+                                                 pm_replay_target_slot = new_episodes_replay$slot[rn],
+                                                 pm_bc_type = new_episodes_replay$uitzendtype[rn], # live/semi-live
+                                                 pm_nipperstudio = new_episodes_replay$nipper_mogelijk[rn],
+                                                 pm_replay_week_start = bc_week_start(pm_slot_start = new_episodes_replay$slot[rn], 
+                                                                                      pm_site_id = cur_site))
+                                   
+                                 }
+    
     # log as "not found"
     if (prep_episode_entry_id[rn] == "NOT FOUND") {
       v1 <- new_episodes_replay$titel_NL[rn]
       v2 <- new_episodes_replay$slot[rn]
-      v3 = new_episodes_replay$episode_chain[rn]
+      v3 <- new_episodes_replay$episode_chain[rn]
       v4 <- new_episodes_replay$slot_key[rn]
       flog.error(str_glue("no replay found for {v4} = {v2}, chain {v3}, {v1}"), name = log_slug)
     } else {

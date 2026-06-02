@@ -12,6 +12,7 @@ config <- read_yaml("config.yaml")
 TZ_AM <- "Europe/Amsterdam"
 SITE <- list(CONCERTZENDER = 1L, WORLD_OF_JAZZ = 2L)
 BUILD_TYPE <- list(EXTEND = 1L, REVISE  = 2L)
+PROD_TYPE <- list(LACIE = "a", SEMI_LIVE = "s")
 R_DAYS_OF_WEEK <- list(MONDAY = 1L, THURSDAY = 4L) # R and SQL have different conventions
 fmt_ts <- stamp("1958-12-25 13:00:00", quiet = T, orders = "ymd HMS")
 log_slug <- "clof"
@@ -334,13 +335,24 @@ repeat {
   chain_env$con <- con
   source("R/load-episode-chains.R", local = chain_env)
   episode_chains <- chain_env$episode_chains
-  
-  # . get LaCie chains ----
-  source("R/LaCie_tools.R", encoding = "UTF-8")
-  con_sqlite <- dbConnect(SQLite(), "resources/lacie.sqlite")
-  fs_lacies <- scan_fs(lacie_root)
-  sdb <- sync_db(con = con_sqlite, fs = fs_lacies)
-  db_lacies <- dbGetQuery(con_sqlite, "select * from lacie_stack order by chain, pos;")
+
+  if (flog_s == "WORLD_OF_JAZZ") {
+    
+    # . check LaCie drive ----
+    lacie_root <- config$lacie_root
+    
+    if (!dir_exists(lacie_root)) {
+      flog.error(str_glue("{lacie_root} is not available; quiting this job."), name = log_slug)
+      break
+    }
+    
+    # . get LaCie chains ----
+    source("R/LaCie_tools.R", encoding = "UTF-8")
+    con_sqlite <- dbConnect(SQLite(), "resources/lacie.sqlite")
+    fs_lacies <- scan_fs(lacie_root)
+    sdb <- sync_db(con = con_sqlite, fs = fs_lacies)
+    db_lacies <- dbGetQuery(con_sqlite, "select * from lacie_stack order by chain, pos;")
+  }
   
   # . update cpnm database ----
   upd_cpnm_env <- new.env(parent = globalenv())

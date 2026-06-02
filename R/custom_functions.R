@@ -539,7 +539,7 @@ lookup_replay <- function(pm_chains,
   
   replay_source <- if (nrow(replay_candidates) == 0) {
     "NOT FOUND"
-  } else if (pm_bc_type == "live") {
+  } else if (str_detect(pm_bc_type, "live")) {
     shortlist <- replay_candidates |> filter(ec_slot < pm_replay_week_start)
     
     if (nrow(shortlist) == 0) "NOT FOUND" else shortlist$episode_entry_id[1]
@@ -731,8 +731,8 @@ fetch_lacie <- function(pm_chain, pm_lacie_chains) {
            nxt_pos = max(pos) + cur_rnk) |> ungroup() |> 
     filter(cur_rnk == 1 & chain == pm_chain) 
   
-  bot_lacie <- lacie |> select(lid, pos = nxt_pos)
-  lacie_chains_upd <- pm_lacie_chains |> rows_update(by = "lid", y = bot_lacie) |> arrange(chain, pos)
+  bot_lacie <- lacie |> select(ep_id, pos = nxt_pos)
+  lacie_chains_upd <- pm_lacie_chains |> rows_update(by = "ep_id", y = bot_lacie) |> arrange(chain, pos)
   
   list(lacie_chains_upd, lacie)
 }

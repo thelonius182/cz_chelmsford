@@ -196,14 +196,19 @@ tib_episode_catlg_keys <- episode_chains |> inner_join(df_clockcatalogue, by = j
 sql_sts <- dbAppendTable(conn = con, name = "episode_catlg_keys", value = tib_episode_catlg_keys)
 
 con_sqlite <- dbConnect(SQLite(), "resources/lacie.sqlite")
-on.exit(dbDisconnect(con_sqlite), add = TRUE)
+dbDisconnect(con_sqlite)
 
-dbExecute(con_sqlite, "create table lacie_stack (lid   text    primary key,
+dbExecute(con_sqlite, "drop table lacie_stack;")
+dbExecute(con_sqlite, "create table lacie_stack (ep_id text    primary key,
                                                  chain text    not null,
                                                  fn    text    not null,
                                                  pos   integer not null,
                                                  unique (chain, fn));"
 )
+
+fs_lacies <- scan_fs(lacie_root)
+sdb <- sync_db(con = con_sqlite, fs = fs_lacies)
+db_lacies <- dbGetQuery(con_sqlite, "select * from lacie_stack order by chain, pos;")
 
 dbAppendTable(conn = con_sqlite, name = "lacie_stack", value = fs_lacies)
 db_lacies <- dbGetQuery(con_sqlite, "select * from lacie_stack order by chain, pos;")
@@ -215,5 +220,5 @@ top_lacies <- db_lacies |>
   ungroup() |> 
   filter(cur_rnk == 1) 
 
-bot_lacies <- top_lacies |> select(lid, pos = nxt_pos)
-db_lacies_upd <- db_lacies |> rows_update(by = "lid", y = bot_lacies) |> arrange(chain, pos)
+bot_lacies <- top_lacies |> select(ep_id, pos = nxt_pos)
+db_lacies_upd <- db_lacies |> rows_update(by = "ep_id", y = bot_lacies) |> arrange(chain, pos)
