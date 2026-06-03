@@ -2,7 +2,20 @@
 # tools for handling files intially stored on external archive drives manufacured by the 
 # LaCie company. Now found on CZ-NAS (Synology)
 # - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
-# 
+
+lacie_chains <- tribble(
+  ~lacie_dir,           ~title_nl,                   ~chain,
+  "Deep Jazz",          "Deep Jazz",                 "DEEPJZZ",
+  "Mazen",              "Door de Mazen van het Net", "MAZEN",
+  "Duke Ellington",     "Duke Ellington",            "DUKE",
+  "Groove & Grease",    "Groove & Grease",           "GROOV",
+  "House of Hard Bop",  "House of Hard Bop",         "HOUSEBOP",
+  "Jazz Piano",         "Jazz Piano",                "JZPIANO",
+  "Three of a Kind",    "Three of a Kind",           "TOAK",
+  "Tussen Swing & Bop", "Tussen Swing en Bop",       "SWIBOP",
+  "Vocal Jazz",         "Vocal Jazz",                "VOCALJZ"
+)
+
 has_valid_date_prefix <- function(fn) {
   
   date_part <- str_sub(fn, 1, 8)
@@ -13,16 +26,21 @@ has_valid_date_prefix <- function(fn) {
     format(parsed, "%Y%m%d") == date_part
 }
 
-scan_fs <- function(root) {
+fetch_ep_id <- function(fn, epi_src) {
+  date_part <- str_sub(fn, 1, 8)
+  # hour_part
+}
+
+scan_fs <- function(root, epi_src) {
   
   dir_ls(root, recurse = TRUE, type = "file") |>
     tibble(qfn = _) |>
     mutate(fn = path_file(qfn)) |> 
     filter(str_to_lower(path_ext(fn)) %in% c("wav", "aif", "aiff", "m4a") & 
              has_valid_date_prefix(fn)) |> 
-    mutate(lacie_dir = path_dir(path_rel(qfn, root)),
-           ep_id = UUIDgenerate(n = n(), use.time = FALSE)) |> 
+    mutate(lacie_dir = path_dir(path_rel(qfn, root))) |>
     inner_join(lacie_chains, by = join_by(lacie_dir)) |> 
+    mutate(ep_id = fetch_ep_id(fn, epi_src)) |>
     group_by(chain) |>
     mutate(pos = row_number()) |>
     ungroup() |>
@@ -72,41 +90,26 @@ sync_db <- function(con_sqlite, fs) {
   # compact_db(con_sqlite)
 }
 
-lacie_chains <- tibble(
-  lacie_dir = c("Door de Mazen van het Net", 
-                "Tussen Swing en Bop", 
-                "Deep Jazz", 
-                "Vocal Jazz", 
-                "Three of a Kind", 
-                "Jazz Piano", 
-                "House of Hard Bop", 
-                "Duke Ellington", 
-                "Groove & Grease"),
-  chain     = c("MAZEN",
-                "SWIBOP",
-                "DEEPJZZ",
-                "VOCALJZ",
-                "TOAK",
-                "JZPIANO",
-                "HOUSEBOP",
-                "DUKE",
-                "GROOV")
-)
-
 lacie_episodes <- function(con_mysql) {
-  sql_stmt <- "select min(b.dates->>'$.start') as bc_start, e.id as episode_id, p.title_nl
-               from entries p 
-                        join entries e on e.parent_id = p.id
-                                      and e.type = 'episode' 
-                                      and e.deleted_at is null 
-                        join entries b on b.parent_id = e.id
-                                      and b.type = 'broadcast' 
-                                      and b.deleted_at is null 
-                                      and b.site_id = 1
-               where p.type = 'program' 
-                 and p.deleted_at is null 
-                 and p.title_nl regexp 'duke|deep|groove|house|jazz piano|mazen|three|tussen swing|vocal jazz'
-               group by e.id, p.title_nl
-               order by 3, 1;"
-  dbGetQuery(con_mysql, sql_stmt) |> left_join(lacie_chains, by = join_by(title_nl == lacie_dir))
+  
+  titles <- lacie_chains$title_nl
+  placeholders <- paste(rep("?", length(titles)), collapse = ", ")
+  
+  sql_stmt <- glue_sql("select min(b.dates->>'$.start') as bc_start_chr, e.id as episode_id, p.title_nl
+                        from entries p 
+                          join entries e on e.parent_id = p.id
+                                        and e.type = 'episode' 
+                                        and e.deleted_at is null 
+                          join entries b on b.parent_id = e.id
+                                        and b.type = 'broadcast' 
+                                        and b.deleted_at is null 
+                                        and b.site_id = 1
+                        where p.type = 'program' 
+                          and p.deleted_at is null 
+                          and p.title_nl in ({SQL(placeholders)})
+                        group by e.id, p.title_nl
+                        order by 3, 1;", .con = con_mysql)
+  dbGetQuery(con_mysql, sql_stmt, params = as.list(titles)) |> 
+    left_join(lacie_chains, by = join_by(title_nl)) |> 
+    select(chain, title_nl, bc_start_chr, episode_id)
 }

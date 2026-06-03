@@ -222,3 +222,51 @@ top_lacies <- db_lacies |>
 
 bot_lacies <- top_lacies |> select(ep_id, pos = nxt_pos)
 db_lacies_upd <- db_lacies |> rows_update(by = "ep_id", y = bot_lacies) |> arrange(chain, pos)
+
+# init LaCie-chains ----
+iho <- read_lines("/mnt/muw/WoJ-hh/inhoudsopgave.txt") |> tibble(fn = _)
+dum <- read_lines("/mnt/muw/WoJ-hh/dummy-content.txt")
+
+write_dummies <- function(flr, iho) {
+  for (fn in iho$fn) {
+    qfn <- paste0(flr, fn)
+    file_create(path = qfn)
+    write_lines(x = dum, file = qfn)
+  }
+}
+
+iho.1 <- iho |> filter(str_detect(fn, "duke"))
+flr <- "/mnt/muw/WoJ-hh/Duke Ellington/"
+write_dummies(flr, iho.1)
+
+iho.1 <- iho |> filter(str_detect(fn, "groove"))
+flr <- "/mnt/muw/WoJ-hh/Groove & Grease/"
+write_dummies(flr, iho.1)
+
+iho.1 <- iho |> filter(str_detect(fn, "house"))
+flr <- "/mnt/muw/WoJ-hh/House of Hard Bop/"
+write_dummies(flr, iho.1)
+
+iho.1 <- iho |> filter(str_detect(fn, "piano"))
+flr <- "/mnt/muw/WoJ-hh/Jazz Piano/"
+write_dummies(flr, iho.1)
+
+iho.1 <- iho |> filter(str_detect(fn, "mazen"))
+flr <- "/mnt/muw/WoJ-hh/Mazen/"
+write_dummies(flr, iho.1)
+
+iho.1 <- iho |> filter(str_detect(fn, "three"))
+flr <- "/mnt/muw/WoJ-hh/Three of a Kind/"
+write_dummies(flr, iho.1)
+
+iho.1 <- iho |> filter(str_detect(fn, "swing"))
+flr <- "/mnt/muw/WoJ-hh/Tussen Swing en Bop/"
+write_dummies(flr, iho.1)
+
+iho.1 <- iho |> filter(str_detect(fn, "vocal"))
+flr <- "/mnt/muw/WoJ-hh/Vocal Jazz/"
+write_dummies(flr, iho.1)
+
+iho.1 <- iho |> filter(str_detect(fn, "deep"))
+flr <- "/mnt/muw/WoJ-hh/Deep Jazz/"
+write_dummies(flr, iho.1)

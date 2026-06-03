@@ -12,7 +12,7 @@
 # - n_new_episodes_fresh
 # - n_new_episodes_replay
 # - tib_clock_upd
-# - lacie_chains
+# - lacie_chains_upd
 # = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = 
 
 # > add new to database ----

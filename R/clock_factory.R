@@ -348,8 +348,9 @@ repeat {
     
     # . get LaCie chains ----
     source("R/LaCie_tools.R", encoding = "UTF-8")
+    ep_lacies <- lacie_episodes(con_mysql = con)
     con_sqlite <- dbConnect(SQLite(), "resources/lacie.sqlite")
-    fs_lacies <- scan_fs(lacie_root)
+    fs_lacies <- scan_fs(lacie_root, ep_lacies)
     sdb <- sync_db(con = con_sqlite, fs = fs_lacies)
     db_lacies <- dbGetQuery(con_sqlite, "select * from lacie_stack order by chain, pos;")
   }
