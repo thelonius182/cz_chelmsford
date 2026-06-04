@@ -350,7 +350,14 @@ repeat {
     source("R/LaCie_tools.R", encoding = "UTF-8")
     ep_lacies <- lacie_episodes(con_mysql = con)
     con_sqlite <- dbConnect(SQLite(), "resources/lacie.sqlite")
-    fs_lacies <- scan_fs(lacie_root, ep_lacies)
+    fs_lacies <- scan_fs(lacie_root, ep_lacies) |> 
+      mutate(bc_start_chr = separate_dt(fn)) |> 
+      inner_join(ep_lacies, by = join_by(chain, bc_start_chr)) |> 
+      # some broadcasts have 2 files: .wav and .aiff; exclude .wav
+      group_by(episode_id) |> 
+      mutate(rn = row_number()) |> 
+      ungroup() |> 
+      filter(rn == 1)
     sdb <- sync_db(con = con_sqlite, fs = fs_lacies)
     db_lacies <- dbGetQuery(con_sqlite, "select * from lacie_stack order by chain, pos;")
   }

@@ -40,12 +40,12 @@ scan_fs <- function(root, epi_src) {
              has_valid_date_prefix(fn)) |> 
     mutate(lacie_dir = path_dir(path_rel(qfn, root))) |>
     inner_join(lacie_chains, by = join_by(lacie_dir)) |> 
-    mutate(ep_id = fetch_ep_id(fn, epi_src)) |>
+    # mutate(ep_id = fetch_ep_id(fn, epi_src)) |>
     group_by(chain) |>
     mutate(pos = row_number()) |>
     ungroup() |>
     arrange(chain, pos) |> 
-    select(chain, pos, fn, ep_id)
+    select(chain, pos, fn)
 }
 
 sync_db <- function(con_sqlite, fs) {
@@ -76,7 +76,7 @@ sync_db <- function(con_sqlite, fs) {
     
     if (nrow(any_ins) > 0) {
       
-      db_ins <- any_ins |> select(ep_id = fs_lid, 
+      db_ins <- any_ins |> select(ep_id = fs_episode_id, 
                                   chain = fs_chain,
                                   fn = fs_fn,
                                   pos = bot_pos)
