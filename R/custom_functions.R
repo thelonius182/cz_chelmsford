@@ -171,6 +171,7 @@ cpnm_epi_bc_ins <- function(pm_pgm_id,
   new_id_epi <- UUIDgenerate(use.time = FALSE)  # v4
   bc_seconds <- 60 * pm_bc_minutes
   pm_now <- format(pm_created_at, tz = "UTC", usetz = FALSE)
+  pm_img_id <- if (is.na(pm_img_id)) DFT_IMG[site_id] else pm_img_id
   sql_stmt <- glue_sql("
       INSERT INTO entries (id,
                            type,
