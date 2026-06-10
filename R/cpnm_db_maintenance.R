@@ -199,10 +199,12 @@ con_sqlite <- dbConnect(SQLite(), "resources/lacie.sqlite")
 dbDisconnect(con_sqlite)
 
 dbExecute(con_sqlite, "drop table lacie_stack;")
-dbExecute(con_sqlite, "create table lacie_stack (ep_id text    primary key,
-                                                 chain text    not null,
-                                                 fn    text    not null,
-                                                 pos   integer not null,
+dbExecute(con_sqlite, "create table lacie_stack (ep_id        text    primary key,
+                                                 chain        text    not null,
+                                                 fn           text    not null,
+                                                 title        text    not null,
+                                                 bc_start_chr text    not null,
+                                                 pos          integer not null,
                                                  unique (chain, fn));"
 )
 
@@ -224,7 +226,7 @@ bot_lacies <- top_lacies |> select(ep_id, pos = nxt_pos)
 db_lacies_upd <- db_lacies |> rows_update(by = "ep_id", y = bot_lacies) |> arrange(chain, pos)
 
 # init LaCie-chains ----
-iho <- read_lines("/mnt/muw/WoJ-hh/inhoudsopgave.txt") |> tibble(fn = _)
+iho <- read_lines("/mnt/muw/WoJ-hh/inhoudsopgave2.txt") |> tibble(fn = _)
 dum <- read_lines("/mnt/muw/WoJ-hh/dummy-content.txt")
 
 write_dummies <- function(flr, iho) {
@@ -267,6 +269,6 @@ iho.1 <- iho |> filter(str_detect(fn, "vocal"))
 flr <- "/mnt/muw/WoJ-hh/Vocal Jazz/"
 write_dummies(flr, iho.1)
 
-iho.1 <- iho |> filter(str_detect(fn, "deep"))
+iho.1 <- iho |> filter(str_detect(fn, "Deep"))
 flr <- "/mnt/muw/WoJ-hh/Deep Jazz/"
 write_dummies(flr, iho.1)

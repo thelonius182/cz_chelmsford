@@ -1,16 +1,3 @@
-# cz_extract_sheet <- function(ss_name, sheet_name) {
-#   read_xlsx(ss_name,
-#             sheet = sheet_name,
-#             .name_repair = ~ ifelse(nzchar(.x), .x, LETTERS[seq_along(.x)]))
-# }
-
-# cz_get_url <- function(cz_ss) {
-#   cz_url <- paste0("url_", cz_ss)
-#   
-#   # use [[ instead of $, because it is a variable, not a constant
-#   paste0("https://", config$url_pfx, config[[cz_url]]) 
-# }
-
 # improve name for 'has non-zero number of characters'
 has_value <- function(x) nzchar(x)
 
@@ -537,6 +524,7 @@ lookup_replay <- function(pm_chains,
                           pm_replay_week_start) {
   # prune current chain
   replay_candidates <- pm_chains |> filter(episode_chain == pm_cur_chain)
+  flog.info("Lookup replay for %s, %s candidates", pm_cur_chain, nrow(replay_candidates), name = log_slug)
   
   replay_source <- if (nrow(replay_candidates) == 0) {
     "NOT FOUND"
@@ -562,7 +550,7 @@ lookup_replay <- function(pm_chains,
 log_tibble <- function(x, label = deparse(substitute(x)), n = 20, width = 160) {
   x_tbl <- as_tibble(x)
   txt <- capture.output(print(x_tbl, n = n, width = width))
-  flog.error("%s:\n%s", label, paste(txt, collapse = "\n"), name = "clof")
+  flog.error("%s:\n%s", label, paste(txt, collapse = "\n"), name = log_slug)
 }
 
 # parse_rebuild_options <- function(args = commandArgs(trailingOnly = TRUE)) {
@@ -726,6 +714,7 @@ fetch_broadcasts <- function(pm_con) {
 }
 
 fetch_lacie <- function(pm_chain, pm_lacie_chains) {
+  flog.info("fetching LaCie for chain = %s", pm_chain, name = log_slug)
   
   lacie <- pm_lacie_chains |> group_by(chain) |> 
     mutate(cur_rnk = row_number(),

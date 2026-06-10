@@ -337,7 +337,7 @@ repeat {
   source("R/load-episode-chains.R", local = chain_env)
   episode_chains <- chain_env$episode_chains
 
-  if (flog_s == "WORLD_OF_JAZZ") {
+  if (site_id == SITE$WORLD_OF_JAZZ) {
     
     # . check LaCie drive ----
     lacie_root <- config$lacie_root
@@ -351,7 +351,7 @@ repeat {
     source("R/LaCie_tools.R", encoding = "UTF-8")
     ep_lacies <- lacie_episodes(con_mysql = con)
     con_sqlite <- dbConnect(SQLite(), "resources/lacie.sqlite")
-    fs_lacies <- scan_fs(lacie_root, ep_lacies) |> 
+    fs_lacies <- scan_fs(lacie_root) |> 
       mutate(bc_start_chr = separate_dt(fn)) |> 
       inner_join(ep_lacies, by = join_by(chain, bc_start_chr)) |> 
       # some broadcasts have 2 files: .wav and .aiff; exclude .wav
@@ -379,6 +379,10 @@ repeat {
   tib_clock_upd <- result$tib_clock_upd
   db_lacies_upd <- result$lacie_chains_upd
   
+  # store modified LaCie chains ----
+  dbe <- dbExecute(con_sqlite, "delete from lacie_stack")
+  dba <- dbAppendTable(con_sqlite, name = "lacie_stack", value = db_lacies_upd)
+  
   # . look for gaps/overlaps ----
   week_seq_err <- dbGetQuery(conn = con, statement = read_file("SQL/check_for_gaps.sql"), 
                              # params = list(fmt_ts(begin_ts), fmt_ts(end_ts))) |> 
@@ -393,12 +397,9 @@ repeat {
   if (nrow(week_seq_err) > 0) {
     flog.error("Gaps/overlaps found in database.", name = log_slug)
     log_tibble(week_seq_err |> select(issue))
+    flog.info("Run a revision job after fixing gaps/overlaps.", name = log_slug)
     break
   }
-  
-  # store modified LaCie chains ----
-  dbe <- dbExecute(con_sqlite, "delete from lacie_stack")
-  dba <- dbAppendTable(con_sqlite, name = "lacie_stack", value = db_lacies_upd)
   
   # store an extension as .RDS too ----
   if (cur_build_type == BUILD_TYPE$EXTEND) {

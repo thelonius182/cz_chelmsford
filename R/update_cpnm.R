@@ -75,19 +75,22 @@ if (n > 0) {
   
   for (rn in seq_len(n)) {
     
-    prep_episode_entry_id[rn] <- if (flog_s == "WORLD_OF_JAZZ" && new_episodes_replay$prod_type[rn] == PROD_TYPE$LACIE) {
-                                         fetch_lacie(pm_chain = new_episodes_replay$episode_chain[rn],
-                                                     pm_lacie_chains = lacie_chains)
-                                 } else {
-                                   lookup_replay(pm_chains = episode_chains,
-                                                 pm_cur_chain = new_episodes_replay$episode_chain[rn],
-                                                 pm_replay_target_slot = new_episodes_replay$slot[rn],
-                                                 pm_bc_type = new_episodes_replay$uitzendtype[rn], # live/semi-live
-                                                 pm_nipperstudio = new_episodes_replay$nipper_mogelijk[rn],
-                                                 pm_replay_week_start = bc_week_start(pm_slot_start = new_episodes_replay$slot[rn], 
-                                                                                      pm_site_id = cur_site))
-                                   
-                                 }
+    prep_episode_entry_id[rn] <- 
+      if (cur_site == SITE$WORLD_OF_JAZZ && new_episodes_replay$prod_type[rn] == PROD_TYPE$LACIE) {
+        la_list <- fetch_lacie(pm_chain = new_episodes_replay$episode_chain[rn],
+                               pm_lacie_chains = lacie_chains)
+        lacie_chains <- la_list[[1]]
+        la_list[[2]] |> pull(ep_id)
+      } else {
+        lookup_replay(pm_chains = episode_chains,
+                      pm_cur_chain = new_episodes_replay$episode_chain[rn],
+                      pm_replay_target_slot = new_episodes_replay$slot[rn],
+                      pm_bc_type = new_episodes_replay$uitzendtype[rn], # live/semi-live
+                      pm_nipperstudio = new_episodes_replay$nipper_mogelijk[rn],
+                      pm_replay_week_start = bc_week_start(pm_slot_start = new_episodes_replay$slot[rn], 
+                                                           pm_site_id = cur_site))
+        
+      }
     
     # log as "not found"
     if (prep_episode_entry_id[rn] == "NOT FOUND") {

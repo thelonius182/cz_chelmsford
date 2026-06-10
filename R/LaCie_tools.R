@@ -1,19 +1,20 @@
 # - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
 # tools for handling files intially stored on external archive drives manufacured by the 
-# LaCie company. Now found on CZ-NAS (Synology)
+# LaCie company, hence 'LaCie-files'. Files have since  been migrated to CZ-NAS (Synology), 
+# but continue to go by the name 'Lacie-files'.
 # - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
 
 lacie_chains <- tribble(
   ~lacie_dir,           ~title_nl,                   ~chain,
-  "Deep Jazz",          "Deep Jazz",                 "DEEPJZZ",
-  "Mazen",              "Door de Mazen van het Net", "MAZEN",
-  "Duke Ellington",     "Duke Ellington",            "DUKE",
-  "Groove & Grease",    "Groove & Grease",           "GROOV",
-  "House of Hard Bop",  "House of Hard Bop",         "HOUSEBOP",
-  "Jazz Piano",         "Jazz Piano",                "JZPIANO",
-  "Three of a Kind",    "Three of a Kind",           "TOAK",
-  "Tussen Swing & Bop", "Tussen Swing en Bop",       "SWIBOP",
-  "Vocal Jazz",         "Vocal Jazz",                "VOCALJZ"
+  "Deep Jazz",           "Deep Jazz",                 "DEEPJZ",
+  "Mazen",               "Door de Mazen van het Net", "MAZEN",
+  "Duke Ellington",      "Duke Ellington",            "DUKE",
+  "Groove & Grease",     "Groove & Grease",           "GROOV",
+  "House of Hard Bop",   "House of Hard Bop",         "HOUSEBOP",
+  "Jazz Piano",          "Jazz Piano",                "JZPIANO",
+  "Three of a Kind",     "Three of a Kind",           "TOAK",
+  "Tussen Swing en Bop", "Tussen Swing en Bop",       "SWIBOP",
+  "Vocal Jazz",          "Vocal Jazz",                "VOCALJZ"
 )
 
 has_valid_date_prefix <- function(fn) {
@@ -26,21 +27,14 @@ has_valid_date_prefix <- function(fn) {
     format(parsed, "%Y%m%d") == date_part
 }
 
-fetch_ep_id <- function(fn, epi_src) {
-  date_part <- str_sub(fn, 1, 8)
-  # hour_part
-}
-
-scan_fs <- function(root, epi_src) {
+scan_fs <- function(root) {
   
-  dir_ls(root, recurse = TRUE, type = "file") |>
+  result <- dir_ls(root, recurse = TRUE, type = "file") |>
     tibble(qfn = _) |>
     mutate(fn = path_file(qfn)) |> 
-    filter(str_to_lower(path_ext(fn)) %in% c("wav", "aif", "aiff", "m4a") & 
-             has_valid_date_prefix(fn)) |> 
+    filter(str_to_lower(path_ext(fn)) %in% c("wav", "aif", "aiff", "m4a") & has_valid_date_prefix(fn)) |> 
     mutate(lacie_dir = path_dir(path_rel(qfn, root))) |>
     inner_join(lacie_chains, by = join_by(lacie_dir)) |> 
-    # mutate(ep_id = fetch_ep_id(fn, epi_src)) |>
     group_by(chain) |>
     mutate(pos = row_number()) |>
     ungroup() |>
@@ -79,8 +73,10 @@ sync_db <- function(con_sqlite, fs) {
       db_ins <- any_ins |> select(ep_id = fs_episode_id, 
                                   chain = fs_chain,
                                   fn = fs_fn,
+                                  title = fs_title_nl,
+                                  bc_start_chr = fs_bc_start_chr,
                                   pos = bot_pos)
-      
+
       dbAppendTable(con_sqlite, "lacie_stack", db_ins)    
     }
     
