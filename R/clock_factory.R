@@ -32,7 +32,7 @@ if (interactive() && requireNamespace("rstudioapi", quietly = TRUE) && rstudioap
   site_id <- as.integer(site_id_chr)
   
   # prompt: where to start (re-)building for that site?
-  dft_build_from_UTC <- next_bc_week_start(pm_site_id = site_id, pm_cpnm_db = con)
+  dft_build_from_UTC <- next_bc_week_start(pm_site_id = site_id, pm_cpnm_db = con_cpnm)
   dft_build_from_NL <- force_tz(dft_build_from_UTC$value, tzone = TZ_AM)  
   build_from_chr <- rstudioapi::showPrompt(title = "Build from date/time", 
                                            message = "shown: start of next new week", 
@@ -40,7 +40,7 @@ if (interactive() && requireNamespace("rstudioapi", quietly = TRUE) && rstudioap
   build_from_NL <- ymd_hms(build_from_chr, quiet = T, tz = TZ_AM)
   
   if (is.na(build_from_NL)) {
-    dbDisconnect(con)
+    dbDisconnect(con_cpnm)
     close_tunnel(tunnel)
     cat(as.character(build_from_NL))
     stop("Invalid date. Expect 'ymd hms'-format", call. = FALSE)
@@ -51,13 +51,13 @@ if (interactive() && requireNamespace("rstudioapi", quietly = TRUE) && rstudioap
   # get cmd-line input
   srvjob_args <- parse_args()
   site_id <- as.integer(srvjob_args$site_id)
-  build_from_UTC <- next_bc_week_start(pm_site_id = site_id, pm_cpnm_db = con)
+  build_from_UTC <- next_bc_week_start(pm_site_id = site_id, pm_cpnm_db = con_cpnm)
   build_from_NL <- force_tz(build_from_UTC$value, tzone = TZ_AM)  
   cur_build_type <- BUILD_TYPE$EXTEND
 }
 
 # Build production clock set ----
-prod_clock_set_db_raw <- dbGetQuery(conn = con, statement = read_file("SQL/load-production-clockset.sql"),
+prod_clock_set_db_raw <- dbGetQuery(conn = con_cpnm, statement = read_file("SQL/load-production-clockset.sql"),
                                     params = list(fmt_ts(build_from_NL), site_id))
 prod_clock_set_db <- prod_clock_set_db_raw |>
   mutate(across(where(~ inherits(.x, "POSIXct")), ~ force_tz(.x, tzone = TZ_AM)),
@@ -199,7 +199,7 @@ repeat {
               and name->>'$.nl' not in ('Algemeen', 'World of Jazz')
             order by 1
             ;"
-  ty_genres <- dbGetQuery(con, query)
+  ty_genres <- dbGetQuery(con_cpnm, query)
   df_clock_cz_cur.1 <- df_clock_cz_cur |> left_join(ty_genres, by = join_by(genre == genre_NL))
   df_missing <- df_clock_cz_cur.1 |> filter(is.na(ty_genre_id))
   
@@ -218,7 +218,7 @@ repeat {
               and name->>'$.en' is not null
             order by 1
             ;"
-  ty_editors <- dbGetQuery(con, query)
+  ty_editors <- dbGetQuery(con_cpnm, query)
   df_clock_cz_cur.2 <- df_clock_cz_cur.1 |> left_join(ty_editors, by = join_by("redacteurs" == "editor_name"))
   
   # . check complete ----
@@ -234,7 +234,7 @@ repeat {
     mutate(afbeelding = as.integer(afbeelding), image_id = NA_character_) |> arrange(afbeelding)
   
   for (rn in seq_len(nrow(df_afb))) {
-    df_image <- cpnm_img_get(pm_img_id = df_afb$afbeelding[rn], pm_cpnm_db = con)
+    df_image <- cpnm_img_get(pm_img_id = df_afb$afbeelding[rn], pm_cpnm_db = con_cpnm)
     
     if (is.na(df_image$id)) {
       next
@@ -278,7 +278,7 @@ repeat {
                           FROM counts
             )
             SELECT titel_nl_lc, pgm_id FROM ranked WHERE rn = 1 ORDER BY titel_nl_lc;"
-  program_titles <- dbGetQuery(con, query)
+  program_titles <- dbGetQuery(con_cpnm, query)
   
   df_clock_cz_cur.4 <- df_clock_cz_cur.3 |> left_join(program_titles, by = join_by("titel_nl_lc"))
   df_missing <- df_clock_cz_cur.4 |> filter(is.na(pgm_id))
@@ -301,7 +301,7 @@ repeat {
   
   # . no diffs ----
   if (nrow(df_clock_cz_cur.6) == 0) {
-    flog.error(str_glue("Nothing found to {flog_bt}; quiting this job."), name = log_slug)
+    flog.error(str_glue("Nothing found to {flog_b}; quiting this job."), name = log_slug)
     break
   }
   
@@ -312,17 +312,17 @@ repeat {
   fmt_action_at = format(ts_now, tz = "UTC", usetz = FALSE)
   
   if (nrow(bc_to_delete) > 0) {
-    sql_sts <- dbExecute(con, "drop temporary table if exists bc_to_delete")
-    sql_sts <- dbExecute(con, "create temporary table bc_to_delete (
+    sql_sts <- dbExecute(con_cpnm, "drop temporary table if exists bc_to_delete")
+    sql_sts <- dbExecute(con_cpnm, "create temporary table bc_to_delete (
                                  bc_id_delete char(36) character set utf8mb4 collate utf8mb4_unicode_ci)")
-    sql_sts <- dbAppendTable(con, "bc_to_delete", bc_to_delete)
+    sql_sts <- dbAppendTable(con_cpnm, "bc_to_delete", bc_to_delete)
     sql_stmt <- glue_sql("update entries as e
                           join bc_to_delete as c on c.bc_id_delete = e.id
                           set e.deleted_at = {fmt_action_at}
                           where e.type = 'broadcast'
                             and e.deleted_at is null
-                            and e.site_id = 1;", .con = con)
-    sql_sts <- dbExecute(con, sql_stmt)
+                            and e.site_id = 1;", .con = con_cpnm)
+    sql_sts <- dbExecute(con_cpnm, sql_stmt)
   }
   
   # . add diff ep's + bc's ----
@@ -333,7 +333,7 @@ repeat {
   
   # . get episode chains ----
   chain_env <- new.env(parent = globalenv())
-  chain_env$con <- con
+  chain_env$con_cpnm <- con_cpnm
   source("R/load-episode-chains.R", local = chain_env)
   episode_chains <- chain_env$episode_chains
 
@@ -349,7 +349,7 @@ repeat {
     
     # . get LaCie chains ----
     source("R/LaCie_tools.R", encoding = "UTF-8")
-    ep_lacies <- lacie_episodes(con_mysql = con)
+    ep_lacies <- lacie_episodes(con_mysql = con_cpnm)
     con_sqlite <- dbConnect(SQLite(), "resources/lacie.sqlite")
     fs_lacies <- scan_fs(lacie_root) |> 
       mutate(bc_start_chr = separate_dt(fn)) |> 
@@ -359,14 +359,14 @@ repeat {
       mutate(rn = row_number()) |> 
       ungroup() |> 
       filter(rn == 1)
-    sdb <- sync_db(con = con_sqlite, fs = fs_lacies)
+    sdb <- sync_db(con_sqlite = con_sqlite, fs = fs_lacies)
     db_lacies <- dbGetQuery(con_sqlite, "select * from lacie_stack order by chain, pos;")
   }
   
   # . update cpnm database ----
   upd_cpnm_env <- new.env(parent = globalenv())
   upd_cpnm_env$tib_clock <- ep_bc_to_add
-  upd_cpnm_env$con <- con
+  upd_cpnm_env$con_cpnm <- con_cpnm
   upd_cpnm_env$episode_chains <- episode_chains
   upd_cpnm_env$log_slug <- log_slug
   upd_cpnm_env$cur_site <- site_id
@@ -384,7 +384,7 @@ repeat {
   dba <- dbAppendTable(con_sqlite, name = "lacie_stack", value = db_lacies_upd)
   
   # . look for gaps/overlaps ----
-  week_seq_err <- dbGetQuery(conn = con, statement = read_file("SQL/check_for_gaps.sql"), 
+  week_seq_err <- dbGetQuery(conn = con_cpnm, statement = read_file("SQL/check_for_gaps.sql"), 
                              # params = list(fmt_ts(begin_ts), fmt_ts(end_ts))) |> 
                              params = list(fmt_ts(build_from_NL - minutes(10L)),
                                            site_id)) |> 
@@ -415,6 +415,6 @@ repeat {
 flog.info("job finished", name = log_slug)
 
 # Cleanup ----
-dbDisconnect(con)
+dbDisconnect(con_cpnm)
 close_tunnel(tunnel)
 dbDisconnect(con_sqlite)

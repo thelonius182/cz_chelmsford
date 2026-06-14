@@ -100,7 +100,7 @@ wait_for_tunnel(
 )
 
 # connect to db ----
-con <- dbConnect(
+con_cpnm <- dbConnect(
   drv = RMariaDB::MariaDB(),
   host = env_db_host,
   port = as.integer(env_db_port),

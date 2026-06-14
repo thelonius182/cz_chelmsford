@@ -4,11 +4,11 @@ ins_result <-
                pm_title_EN = "Treasure Hunting",
                pm_descr_NL = "Een duik in de archieven om luisteraars te verrassen met verborgen meesterwerken en vergeten opnames.",
                pm_descr_EN = "A dive into the archives to surprise listeners with hidden masterpieces and forgotten recordings.",
-               pm_cpnm_db = con)
+               pm_cpnm_db = con_cpnm)
 
 # fix missing editor(s) ----
 for (cur_editor in ds_missing$redacteurs) {
-  cpnm_edi_ins(pm_name_NL = cur_editor, pm_cpnm_db = con)
+  cpnm_edi_ins(pm_name_NL = cur_editor, pm_cpnm_db = con_cpnm)
 }
 
 # WJ: append missing colofons ----
@@ -21,16 +21,16 @@ tcf as (select name->>'$.nl' as editor_cf, id as cf_id
 select * from tlg left join tcf on tcf.editor_cf = tlg.editor_lg
 order by 1
 ;"
-cf_editors <- dbGetQuery(con, sql_stmt)
+cf_editors <- dbGetQuery(con_cpnm, sql_stmt)
 missing_cfs <- tbl_w_ids_3 |> left_join(cf_editors, by = join_by(redacteurs == editor_lg)) |> 
   select(redacteurs, editor_cf) |> distinct() |> filter(is.na(editor_cf))
 
 for (cur_editor in missing_cfs$redacteurs) {
-  ins_cpnm_editor(pm_name_NL = cur_editor, pm_cpnm_db = con)
+  ins_cpnm_editor(pm_name_NL = cur_editor, pm_cpnm_db = con_cpnm)
 }
 
 for (cur_editor in woj_schedule_w_ids_missing$redacteurs) {
-  ins_cpnm_editor(pm_name_NL = cur_editor, pm_cpnm_db = con)
+  ins_cpnm_editor(pm_name_NL = cur_editor, pm_cpnm_db = con_cpnm)
 }
 
 # fix missing EN in WJ ----
@@ -51,8 +51,8 @@ for (rn in seq_len(nrow(fix_these_pgms))) {
                        user_id = 5,
                        updated_at = NOW()
                    where id = {cur_id};", 
-                  .con = con)
-  sql_result <- dbExecute(conn = con, statement = qry)
+                  .con = con_cpnm)
+  sql_result <- dbExecute(conn = con_cpnm, statement = qry)
 }
 
 fix_these_editors <- woj_schedule_w_ids.5 |> select(ty_editor_id, redacteurs) |> distinct() |> arrange(redacteurs)
@@ -69,8 +69,8 @@ for (rn in seq_len(nrow(fix_these_editors))) {
                        user_id = 5,
                        updated_at = NOW()
                    where id = {cur_id};", 
-                  .con = con)
-  sql_result <- dbExecute(conn = con, statement = qry)
+                  .con = con_cpnm)
+  sql_result <- dbExecute(conn = con_cpnm, statement = qry)
 }
 
 # fix missing EN in CZ ----
@@ -91,8 +91,8 @@ for (rn in seq_len(nrow(fix_these_pgms))) {
                        user_id = 5,
                        updated_at = NOW()
                    where id = {cur_id};", 
-                  .con = con)
-  sql_result <- dbExecute(conn = con, statement = qry)
+                  .con = con_cpnm)
+  sql_result <- dbExecute(conn = con_cpnm, statement = qry)
 }
 
 fix_these_editors <- tbl_w_ids_3 |> select(ty_editor_id, redacteurs) |> distinct() |> arrange(redacteurs)
@@ -109,8 +109,8 @@ for (rn in seq_len(nrow(fix_these_editors))) {
                        user_id = 5,
                        updated_at = NOW()
                    where id = {cur_id};", 
-                  .con = con)
-  sql_result <- dbExecute(conn = con, statement = qry)
+                  .con = con_cpnm)
+  sql_result <- dbExecute(conn = con_cpnm, statement = qry)
 }
 
 # CZ+WJ: fix EN-names in programs/slugs <2026-04-05>
@@ -133,8 +133,8 @@ for (rn in seq_len(nrow(fix_these))) {
                        user_id = 5,
                        updated_at = NOW()
                    where id = {cur_id};", 
-                  .con = con)
-  sql_result <- dbExecute(conn = con, statement = qry)
+                  .con = con_cpnm)
+  sql_result <- dbExecute(conn = con_cpnm, statement = qry)
 }
 
 # add missing episodes to clock ----
@@ -168,7 +168,7 @@ qry <- "with broadcasts as (
     where next_bc_start is not null
       and bc_stop = next_bc_start
     order by bc_start;"
-cz_week <- dbGetQuery(con, qry) |> mutate(bc_start = force_tz(bc_start, tzone = tz_am)) |> select(slot = bc_start,
+cz_week <- dbGetQuery(con_cpnm, qry) |> mutate(bc_start = force_tz(bc_start, tzone = tz_am)) |> select(slot = bc_start,
                                                                                                   episode_entry_id)
 cz_replays <- df_new_episodes_replay |> select(slot) |> inner_join(cz_week, by = join_by(slot))
 df_clock_cz.3 <- df_clock_cz.2 |> rows_update(cz_replays, by = "slot")
@@ -193,7 +193,7 @@ sav_tbl <- tibble(
 
 tib_episode_catlg_keys <- episode_chains |> inner_join(df_clockcatalogue, by = join_by(episode_chain)) |> 
   select(ep_id = episode_entry_id, ep_catkey = catalg_key) 
-sql_sts <- dbAppendTable(conn = con, name = "episode_catlg_keys", value = tib_episode_catlg_keys)
+sql_sts <- dbAppendTable(conn = con_cpnm, name = "episode_catlg_keys", value = tib_episode_catlg_keys)
 
 con_sqlite <- dbConnect(SQLite(), "resources/lacie.sqlite")
 dbDisconnect(con_sqlite)
@@ -209,7 +209,7 @@ dbExecute(con_sqlite, "create table lacie_stack (ep_id        text    primary ke
 )
 
 fs_lacies <- scan_fs(lacie_root)
-sdb <- sync_db(con = con_sqlite, fs = fs_lacies)
+sdb <- sync_db(con_cpnm = con_sqlite, fs = fs_lacies)
 db_lacies <- dbGetQuery(con_sqlite, "select * from lacie_stack order by chain, pos;")
 
 dbAppendTable(conn = con_sqlite, name = "lacie_stack", value = fs_lacies)

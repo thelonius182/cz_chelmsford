@@ -1,7 +1,7 @@
 # = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = 
 # Shared script in explicit env = upd_cpnm_env. Required objects from global env:
 # - tib_clock:      sic
-# - con:            connection to cpnm-db
+# - con_cpnm:            connection to cpnm-db
 # - episode_chains: sic
 # - lacie_chains:   sic
 # - log_slug:       name/slug of logfile 
@@ -31,7 +31,7 @@ if (nrow(new_episodes_fresh) > 0) {
   func_result <- clock2db(pm_clock_tib = new_episodes_fresh,
                           pm_created_at = ts_now,
                           pm_site = cur_site,
-                          pm_db = con)
+                          pm_db = con_cpnm)
   
   # . update clock tibble rows ----
   qry <- glue_sql(
@@ -44,8 +44,8 @@ if (nrow(new_episodes_fresh) > 0) {
        and b.type = 'broadcast'
        and b.site_id = {cur_site}
        and b.created_at = {fmt_created_at}
-     order by 1;", .con = con)
-  db_new_items <- dbGetQuery(con, qry) |> mutate(slot = force_tz(slot, tzone = TZ_AM))
+     order by 1;", .con = con_cpnm)
+  db_new_items <- dbGetQuery(con_cpnm, qry) |> mutate(slot = force_tz(slot, tzone = TZ_AM))
   tib_clock <- tib_clock |> rows_update(db_new_items, by = "slot")
 }
 
@@ -107,7 +107,7 @@ if (n > 0) {
                                 pm_bc_start = new_episodes_replay$slot[rn],
                                 pm_bc_minutes = new_episodes_replay$slot_minutes[rn],
                                 pm_created_at = ts_now,
-                                pm_cpnm_db = con)
+                                pm_cpnm_db = con_cpnm)
     }
   }
   
