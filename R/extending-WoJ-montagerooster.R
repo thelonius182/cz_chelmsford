@@ -5,7 +5,7 @@ log_slug <- "nxt20"
 apf <- flog.appender(appender.file(config$log_appender_file_nxt20), log_slug)
 flog.info("\n= = = = = = extending WoJ Montagerooster = = = = = =", name = log_slug)
 
-date_series <- function(earliest_date, slots, n = 20, tz = "Europe/Amsterdam") {
+date_series <- function(earliest_date, slots, n = 25, tz = "Europe/Amsterdam") {
 # date_series <- function(earliest_date, slots, n = 20) {
   
   nl_weekdays <- c("ma" = 1, "di" = 2, "wo" = 3, "do" = 4, "vr" = 5, "za" = 6, "zo" = 7)
@@ -67,7 +67,7 @@ date_series <- function(earliest_date, slots, n = 20, tz = "Europe/Amsterdam") {
 # which slots & titles
 cur_slots <- c(
   "vr20-*", 
-  "do14-4"
+  "ma20-4"
 )
 
 titles <- tibble(
@@ -96,6 +96,7 @@ tryCatch(
 
 # find earliest date ----
 nxt20_start_utc <- floor_date(max(montage_woj_raw$Uitzending), unit = "days") + days(1L)
+nxt20_start_utc <- ymd("2026-06-05")
 nxt20_start_NL <- force_tz(nxt20_start_utc, tzone = "Europe/Amsterdam")
 
 # create series ----

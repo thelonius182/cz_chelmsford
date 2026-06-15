@@ -272,3 +272,193 @@ write_dummies(flr, iho.1)
 iho.1 <- iho |> filter(str_detect(fn, "Deep"))
 flr <- "/mnt/muw/WoJ-hh/Deep Jazz/"
 write_dummies(flr, iho.1)
+
+# all current titles WoJ ----
+tryCatch(
+  {
+    # . trigger GD-auth
+    options(gargle_oauth_cache = ".secrets-salsa")
+    gs4_auth(email = "cz.teamservice@concertzender.nl", scopes = "spreadsheets")
+    df_clockcatalogue_raw <- read_sheet(ss = config$gws_clock_catalogue, sheet = "data")
+    df_clockprofile_raw <- read_sheet(ss = config$gws_clock_profiles, sheet = "WORLD_OF_JAZZ")
+  },
+  error = function(e1) {
+    flog.error("Load error GD-sheet(s): %s", conditionMessage(e1), name = log_slug)
+    break
+  })
+
+# . tidy catalogue ----
+df_clockcatalogue <- df_clockcatalogue_raw |> rename(catalg_key = `key-modelrooster`,
+                                                     titel_NL = `titel-NL`,
+                                                     titel_EN = `titel-EN`,
+                                                     productie = `productie-1-taak`,
+                                                     redacteurs = `productie-1-mdw`,
+                                                     genre_1 = `genre-1-NL`,
+                                                     genre_2 = `genre-2-NL`,
+                                                     intro_NL = `std.samenvatting-NL`,
+                                                     intro_EN = `std.samenvatting-EN`,
+                                                     afbeelding = feat_img_ids,
+                                                     episode_chain = `episode-chain`) 
+
+# . tidy profile ----
+df_clockprofile <- df_clockprofile_raw |>
+  rename(slot_key = slot) |> 
+  mutate(slot_minutes = as.integer(min), .keep = "unused", .after = slot_key) |> 
+  filter(!is.na(slot_minutes))
+
+mk_weekly <- df_clockprofile |> filter(!is.na(wekelijks)) |> select(1:6) |> 
+  rename(catalg_key = wekelijks, prod_type = te)
+mk_biweekly<- df_clockprofile |> filter(!is.na(`twee-wekelijks`)) |> select(1:3, 9:11) |> 
+  rename(catalg_key = `twee-wekelijks`) |> pivot_longer(cols = c(A, B), names_to = "cycle", values_to = "prod_type")
+mk_week.1 <- df_clockprofile |> filter(!is.na(`week 1`)) |> select(1:4, catalg_key = `week 1`, prod_type = t1) |> 
+  mutate(block = 1L)
+mk_week.2 <- df_clockprofile |> filter(!is.na(`week 2`)) |> select(1:4, catalg_key = `week 2`, prod_type = t2) |> 
+  mutate(block = 2L)
+mk_week.3 <- df_clockprofile |> filter(!is.na(`week 3`)) |> select(1:4, catalg_key = `week 3`, prod_type = t3) |> 
+  mutate(block = 3L)
+mk_week.4 <- df_clockprofile |> filter(!is.na(`week 4`)) |> select(1:4, catalg_key = `week 4`, prod_type = t4) |> 
+  mutate(block = 4L)
+mk_week.5 <- df_clockprofile |> filter(!is.na(`week 5`)) |> select(1:4, catalg_key = `week 5`, prod_type = t5) |> 
+  mutate(block = 5L)
+
+# . repair 'Thema' ----
+# repair 'Thema' on CZ only, assume it's in slots 'wo20' and 'wo21' of weeks 2 and 4
+# if (site_id == 1) {
+#   mk_week.2 <- mk_week.2 |> mutate(slot_minutes = if_else(slot_key == "wo20", 120L, slot_minutes)) |> filter(slot_key != "wo21")
+#   mk_week.4 <- mk_week.4 |> mutate(slot_minutes = if_else(slot_key == "wo20", 120L, slot_minutes)) |> filter(slot_key != "wo21")
+# }
+
+# . repair 'Rec/Play' ----
+# ... on WJ only, assume it's in slots 'do20' and 'do21' of weeks 2 and 4
+#                            and slots 'wo18' and 'wo19' of weeks 1 and 3
+# if (site_id == 2) {
+mk_week.2 <- mk_week.2 |> mutate(slot_minutes = if_else(slot_key == "do20", 120L, slot_minutes)) |> filter(slot_key != "do21")
+mk_week.4 <- mk_week.4 |> mutate(slot_minutes = if_else(slot_key == "do20", 120L, slot_minutes)) |> filter(slot_key != "do21")
+mk_week.1 <- mk_week.1 |> mutate(slot_minutes = if_else(slot_key == "wo18", 120L, slot_minutes)) |> filter(slot_key != "wo19")
+mk_week.3 <- mk_week.3 |> mutate(slot_minutes = if_else(slot_key == "wo18", 120L, slot_minutes)) |> filter(slot_key != "wo19")
+# }
+
+df_clock_cz_weekly <- mk_weekly
+
+df_clock_cz_biweekly <- mk_biweekly
+
+mk_5_weeks <- mk_week.1 |> 
+  bind_rows(mk_week.2) |>
+  bind_rows(mk_week.3) |>
+  bind_rows(mk_week.4) |>
+  bind_rows(mk_week.5)
+
+df_clock_cz_5_weeks <- mk_5_weeks
+
+woj_titles <- df_clock_cz_weekly |> 
+  bind_rows(df_clock_cz_biweekly) |> 
+  bind_rows(df_clock_cz_5_weeks) |> 
+  left_join(df_clockcatalogue, by = join_by(catalg_key)) |> 
+  mutate(src = if_else(prod_type == "h", "H", src),
+         prod_type = if_else(prod_type == "h", "u", prod_type)) |> 
+  mutate(is_replay = if_else(is.na(src), FALSE, TRUE)) |> 
+  select(-src, -mac, -`dummy-1`, -slug) |> 
+  pivot_longer(cols = c(genre_1, genre_2), names_to = NULL, values_to = "genre", values_drop_na = TRUE) |> 
+  select(slot_key,
+         block,
+         catalg_key,
+         prod_type,
+         `redactie-NL`,
+         titel_NL,
+         uitzendtype,
+         is_replay) |> distinct() |> arrange(prod_type, titel_NL)
+
+# all current titles CZ ----
+tryCatch(
+  {
+    # . trigger GD-auth
+    options(gargle_oauth_cache = ".secrets-salsa")
+    gs4_auth(email = "cz.teamservice@concertzender.nl", scopes = "spreadsheets")
+    df_clockcatalogue_raw <- read_sheet(ss = config$gws_clock_catalogue, sheet = "data")
+    df_clockprofile_raw <- read_sheet(ss = config$gws_clock_profiles, sheet = "CONCERTZENDER")
+  },
+  error = function(e1) {
+    flog.error("Load error GD-sheet(s): %s", conditionMessage(e1), name = log_slug)
+    break
+  })
+
+# . tidy catalogue ----
+df_clockcatalogue <- df_clockcatalogue_raw |> rename(catalg_key = `key-modelrooster`,
+                                                     titel_NL = `titel-NL`,
+                                                     titel_EN = `titel-EN`,
+                                                     productie = `productie-1-taak`,
+                                                     redacteurs = `productie-1-mdw`,
+                                                     genre_1 = `genre-1-NL`,
+                                                     genre_2 = `genre-2-NL`,
+                                                     intro_NL = `std.samenvatting-NL`,
+                                                     intro_EN = `std.samenvatting-EN`,
+                                                     afbeelding = feat_img_ids,
+                                                     episode_chain = `episode-chain`) 
+
+# . tidy profile ----
+df_clockprofile <- df_clockprofile_raw |>
+  rename(slot_key = slot) |> 
+  mutate(slot_minutes = as.integer(min), .keep = "unused", .after = slot_key) |> 
+  filter(!is.na(slot_minutes))
+
+mk_weekly <- df_clockprofile |> filter(!is.na(wekelijks)) |> select(1:6) |> 
+  rename(catalg_key = wekelijks, prod_type = te)
+mk_biweekly<- df_clockprofile |> filter(!is.na(`twee-wekelijks`)) |> select(1:3, 9:11) |> 
+  rename(catalg_key = `twee-wekelijks`) |> pivot_longer(cols = c(A, B), names_to = "cycle", values_to = "prod_type")
+mk_week.1 <- df_clockprofile |> filter(!is.na(`week 1`)) |> select(1:4, catalg_key = `week 1`, prod_type = t1) |> 
+  mutate(block = 1L)
+mk_week.2 <- df_clockprofile |> filter(!is.na(`week 2`)) |> select(1:4, catalg_key = `week 2`, prod_type = t2) |> 
+  mutate(block = 2L)
+mk_week.3 <- df_clockprofile |> filter(!is.na(`week 3`)) |> select(1:4, catalg_key = `week 3`, prod_type = t3) |> 
+  mutate(block = 3L)
+mk_week.4 <- df_clockprofile |> filter(!is.na(`week 4`)) |> select(1:4, catalg_key = `week 4`, prod_type = t4) |> 
+  mutate(block = 4L)
+mk_week.5 <- df_clockprofile |> filter(!is.na(`week 5`)) |> select(1:4, catalg_key = `week 5`, prod_type = t5) |> 
+  mutate(block = 5L)
+
+# . repair 'Thema' ----
+# repair 'Thema' on CZ only, assume it's in slots 'wo20' and 'wo21' of weeks 2 and 4
+# if (site_id == 1) {
+mk_week.2 <- mk_week.2 |> mutate(slot_minutes = if_else(slot_key == "wo20", 120L, slot_minutes)) |> filter(slot_key != "wo21")
+mk_week.4 <- mk_week.4 |> mutate(slot_minutes = if_else(slot_key == "wo20", 120L, slot_minutes)) |> filter(slot_key != "wo21")
+# }
+
+# . repair 'Rec/Play' ----
+# ... on WJ only, assume it's in slots 'do20' and 'do21' of weeks 2 and 4
+#                            and slots 'wo18' and 'wo19' of weeks 1 and 3
+# if (site_id == 2) {
+# mk_week.2 <- mk_week.2 |> mutate(slot_minutes = if_else(slot_key == "do20", 120L, slot_minutes)) |> filter(slot_key != "do21")
+# mk_week.4 <- mk_week.4 |> mutate(slot_minutes = if_else(slot_key == "do20", 120L, slot_minutes)) |> filter(slot_key != "do21")
+# mk_week.1 <- mk_week.1 |> mutate(slot_minutes = if_else(slot_key == "wo18", 120L, slot_minutes)) |> filter(slot_key != "wo19")
+# mk_week.3 <- mk_week.3 |> mutate(slot_minutes = if_else(slot_key == "wo18", 120L, slot_minutes)) |> filter(slot_key != "wo19")
+# }
+
+df_clock_cz_weekly <- mk_weekly
+
+df_clock_cz_biweekly <- mk_biweekly
+
+mk_5_weeks <- mk_week.1 |> 
+  bind_rows(mk_week.2) |>
+  bind_rows(mk_week.3) |>
+  bind_rows(mk_week.4) |>
+  bind_rows(mk_week.5)
+
+df_clock_cz_5_weeks <- mk_5_weeks
+
+cz_titles <- df_clock_cz_weekly |> 
+  bind_rows(df_clock_cz_biweekly) |> 
+  bind_rows(df_clock_cz_5_weeks) |> 
+  left_join(df_clockcatalogue, by = join_by(catalg_key)) |> 
+  mutate(src = if_else(prod_type == "h", "H", src),
+         prod_type = if_else(prod_type == "h", "u", prod_type)) |> 
+  mutate(is_replay = if_else(is.na(src), FALSE, TRUE)) |> 
+  select(-src, -mac, -`dummy-1`, -slug) |> 
+  pivot_longer(cols = c(genre_1, genre_2), names_to = NULL, values_to = "genre", values_drop_na = TRUE) |> 
+  select(slot_key,
+         block,
+         catalg_key,
+         prod_type,
+         `redactie-NL`,
+         titel_NL,
+         uitzendtype,
+         is_replay) |> distinct() |> arrange(prod_type, titel_NL)

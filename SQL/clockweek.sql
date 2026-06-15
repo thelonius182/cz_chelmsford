@@ -1,6 +1,6 @@
 select b.dates->>'$.start' as bc_start,
        e.id as ep_id,
-	     replace(e.title_nl, '&amp', '') as ep_title,
+	     replace(e.title_nl, '&amp;', '&') as ep_title,
 	     k.ep_catkey as playlist,
 	     (select min(dates->>'$.start') from entries 
 	                      where type = 'broadcast' 

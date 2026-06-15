@@ -10,6 +10,8 @@ config <- read_yaml("config.yaml")
 fmt_ts <- stamp("1958-12-25 13:00:00", quiet = T, orders = "ymd HMS")
 log_slug <- "clof"
 flap <- flog.appender(appender.file(config$log_appender_file), log_slug)
+TZ_AM <- "Europe/Amsterdam"
+SITE <- list(CONCERTZENDER = 1L, WORLD_OF_JAZZ = 2L)
 
 rgb <- function(r, g, b) {
   list(red = r / 255, green = g / 255, blue = b / 255)
@@ -209,6 +211,7 @@ repeat {
     })
   
   where_to_continue <- max(gws_plws_raw$uitzending, na.rm = T)
+  where_to_continue <- ymd("2026-06-18")
   hour(where_to_continue) <- 12
   minute(where_to_continue) <- 55
   where_to_stop <- where_to_continue + days(7L)
@@ -216,7 +219,6 @@ repeat {
   source("R/cpnm_db_setup.R", encoding = "UTF-8")
 
   # get week from cpnm-db ----  
-  SITE <- list(CONCERTZENDER = 1L, WORLD_OF_JAZZ = 2L)
   db_week <- dbGetQuery(con_cpnm, statement = read_file("SQL/clockweek.sql"), 
                         params = list(where_to_continue, where_to_stop, SITE$WORLD_OF_JAZZ))
   
@@ -245,16 +247,25 @@ repeat {
   
   gws_week_lac <- db_week |> left_join(db_lacies, by = join_by(ep_id))
   
-  catalg <- gws_clock_catalg_raw |> select(title = `titel-NL`, server = `cz-playout-mac`, uitzendtype)
+  # . get catalogue ----
+  catalg <- gws_clock_catalg_raw |> select(catalg_key = `key-modelrooster`, title = `titel-NL`, 
+                                           server = `cz-playout-mac`, uitzendtype, chain = `episode-chain`)
+  catalg_woj <- catalg |> filter(str_detect(uitzendtype, "_woj") & chain != "#NONE#")
+  
+  # . tibble for GWS
   gws_week <- gws_week_lac |> 
-    left_join(catalg, by = join_by(ep_title == title), relationship = "many-to-many") |> 
-    filter(uitzendtype != "non-stop") |> 
-    mutate(lacie = if_else(!is.na(fn), "LaCie", ""),
-           min_bc_start = if_else(min_bc_start == bc_start, NA_character_, min_bc_start)) |> 
+    left_join(catalg, by = join_by(playlist == catalg_key)) |> 
+    filter(is.na(uitzendtype) | uitzendtype != "non-stop") |> 
+    mutate(min_bc_start = if_else(min_bc_start == bc_start, NA_character_, min_bc_start),
+           source = case_when(!is.na(fn) ~ "LaCie", 
+                              ep_title %in% catalg_woj$title ~ "WoJ-pc",
+                              TRUE ~ "Uitzendmac"),
+           slot = to_slot_key(ymd_hms(bc_start, quiet = T, tz = TZ_AM))) |> 
     select(uitzending = bc_start, 
+           slot,
            programma = ep_title, 
            herhaling_van = min_bc_start, 
-           lacie) |> distinct() |> arrange(desc(lacie), programma)
+           source) |> distinct() |> arrange(source, programma)
   
   append_week(ss = config$gws_playlistweeks, sheet = "WORLD_OF_JAZZ")
   

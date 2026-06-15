@@ -144,7 +144,11 @@ repeat {
   }
   
   # build a clock ----
-  bc_week_to <- if (nrow(prod_clock_set_db) > 0) max(prod_clock_set_db$bc_start) else build_from_NL + days(7L) - minutes(10L)
+  bc_week_to <- if (nrow(prod_clock_set_db) > 0) {
+                      max(prod_clock_set_db$bc_start) 
+                } else {
+                     build_from_NL + days(7L) - minutes(10L)
+                }
   
   bc_week_ts <- tibble(ts = seq(from = build_from_NL, to = bc_week_to, by = "hour"))
   
@@ -158,14 +162,18 @@ repeat {
   
   df_clock_cz_biweekly <- df_calendar |> inner_join(mk_biweekly, by = join_by(slot_key, cycle))
   
-  mk_5_weeks <- mk_week.1 |> bind_rows(mk_week.2) |>
+  mk_5_weeks <- mk_week.1 |> 
+    bind_rows(mk_week.2) |>
     bind_rows(mk_week.3) |>
     bind_rows(mk_week.4) |>
     bind_rows(mk_week.5)
   
   df_clock_cz_5_weeks <- df_calendar |> inner_join(mk_5_weeks, by = join_by(slot_key, block))
   
-  df_clock_cz_cur <- df_clock_cz_weekly |> bind_rows(df_clock_cz_biweekly) |> bind_rows(df_clock_cz_5_weeks) |> arrange(slot) |> 
+  df_clock_cz_cur <- df_clock_cz_weekly |> 
+    bind_rows(df_clock_cz_biweekly) |> 
+    bind_rows(df_clock_cz_5_weeks) |> 
+    arrange(slot) |> 
     left_join(df_clockcatalogue, by = join_by(catalg_key)) |> 
     mutate(src = if_else(prod_type == "h", "H", src),
            prod_type = if_else(prod_type == "h", "u", prod_type)) |> 
@@ -320,8 +328,7 @@ repeat {
                           join bc_to_delete as c on c.bc_id_delete = e.id
                           set e.deleted_at = {fmt_action_at}
                           where e.type = 'broadcast'
-                            and e.deleted_at is null
-                            and e.site_id = 1;", .con = con_cpnm)
+                            and e.deleted_at is null;", .con = con_cpnm)
     sql_sts <- dbExecute(con_cpnm, sql_stmt)
   }
   
@@ -333,10 +340,12 @@ repeat {
   
   # . get episode chains ----
   chain_env <- new.env(parent = globalenv())
-  chain_env$con_cpnm <- con_cpnm
+  chain_env$con <- con_cpnm
+  chain_env$catalogue <- df_clockcatalogue
   source("R/load-episode-chains.R", local = chain_env)
   episode_chains <- chain_env$episode_chains
 
+  # . get LaCie chains ----
   if (site_id == SITE$WORLD_OF_JAZZ) {
     
     # . check LaCie drive ----
@@ -347,7 +356,6 @@ repeat {
       break
     }
     
-    # . get LaCie chains ----
     source("R/LaCie_tools.R", encoding = "UTF-8")
     ep_lacies <- lacie_episodes(con_mysql = con_cpnm)
     con_sqlite <- dbConnect(SQLite(), "resources/lacie.sqlite")
@@ -380,8 +388,11 @@ repeat {
   db_lacies_upd <- result$lacie_chains_upd
   
   # store modified LaCie chains ----
-  dbe <- dbExecute(con_sqlite, "delete from lacie_stack")
-  dba <- dbAppendTable(con_sqlite, name = "lacie_stack", value = db_lacies_upd)
+  if (site_id == SITE$WORLD_OF_JAZZ) {
+    dbe <- dbExecute(con_sqlite, "delete from lacie_stack")
+    dba <- dbAppendTable(con_sqlite, name = "lacie_stack", value = db_lacies_upd)
+    dbDisconnect(con_sqlite)
+  }
   
   # . look for gaps/overlaps ----
   week_seq_err <- dbGetQuery(conn = con_cpnm, statement = read_file("SQL/check_for_gaps.sql"), 
@@ -417,4 +428,3 @@ flog.info("job finished", name = log_slug)
 # Cleanup ----
 dbDisconnect(con_cpnm)
 close_tunnel(tunnel)
-dbDisconnect(con_sqlite)

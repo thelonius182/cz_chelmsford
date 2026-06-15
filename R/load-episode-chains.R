@@ -2,6 +2,7 @@
 # Shared script. Required objects from global env:
 # - GD already authenticated
 # - connection to cpnm-db: con
+# - df_clockcatalogue: catalogue
 #
 # Creates:
 # - episode_chains
@@ -26,7 +27,8 @@ db_cpnm_items_raw_epi <- dbGetQuery(con, qry)
 
 qry <- "select parent_id, 
                cast(dates->>'$.start' as datetime) as dttm_start, 
-               cast(dates->>'$.end'   as datetime) as dttm_stop
+               cast(dates->>'$.end'   as datetime) as dttm_stop,
+               site_id
         from entries
         where deleted_at is null 
           -- and site_id = 1
@@ -41,9 +43,9 @@ cpnm_epi_bc <- db_cpnm_items_raw_epi |> inner_join(db_cpnm_items_raw_bc, by = jo
   # filter(str_length(str_trim(title_nl, side = "both")) > 0  & dttm_start >= max_ts_to_load - days(200)) |> 
   add_bc_cols(ts_col = dttm_start) |> 
   mutate(slot_key = paste0(slot_key, "-", bc_week_of_month)) |> 
-  select(ep_id = id, dttm_start, dttm_stop, slot_key, title_nl, has_content) |> 
+  select(ep_id = id, dttm_start, dttm_stop, slot_key, site_id, title_nl, has_content) |> 
   arrange(ep_id, dttm_start, slot_key) |> 
-  group_by(ep_id) |> mutate(rn = row_number()) |> ungroup() |> 
+  group_by(ep_id, site_id) |> mutate(rn = row_number()) |> ungroup() |> 
   filter(rn == 1) |> 
   select(-rn)
   
@@ -60,9 +62,17 @@ joined_slots_b <- cpnm_epi_bc |>
   inner_join(chains_b, by = join_by(title_nl == wp_title)) 
   # filter(dttm_start < max_ts_to_load)
 
+# link chain to bc_type ---
+# . to filter bc's to their site_id
+chain2site <- catalogue |> filter(episode_chain != "#NONE#") |> 
+  mutate(chain_site = if_else(str_detect(uitzendtype, "_woj$"), 2L, 1L)) |> 
+  select(episode_chain, chain_site)
+
 # combine both sets again ----
 episode_chains <- joined_slots_a |> 
   bind_rows(joined_slots_b) |> 
+  inner_join(chain2site, by = join_by(episode_chain), relationship = "many-to-many") |> 
+  filter(site_id == chain_site) |> 
   arrange(episode_chain, desc(dttm_start)) |> 
   mutate(is_replay = F) |> 
-  select(slot = dttm_start, slot_key, is_replay, episode_entry_id = ep_id, episode_chain, has_content)
+  select(slot = dttm_start, slot_key, site_id, is_replay, episode_entry_id = ep_id, episode_chain, has_content)
