@@ -774,3 +774,182 @@ separate_dt <- function(fn) {
     ) |>
     pull(datetime_chr) 
 }
+
+# shrink & format playout ----
+rgb <- function(r, g, b) {
+  list(red = r / 255, green = g / 255, blue = b / 255)
+}
+
+get_sheet_id <- function(ss, sheet) {
+  gs4_get(ss)$sheets |> filter(name == sheet) |> pull(id)
+}
+
+format_pl_sheet <- function(ss, sheet, header_fill = rgb(255, 229, 153)) {
+  
+  sheet_id <- get_sheet_id(ss = ss, sheet = sheet)
+  
+  data <- read_sheet(ss = ss, sheet = sheet)
+  
+  n_rows <- nrow(data) + 1
+  n_cols <- ncol(data)
+  
+  checkbox_index <- match(gereed, names(data)) - 1L
+  
+  section_rows <-data |> 
+    mutate(.sheet_row = row_number() + 1) |>
+    filter(!is.na(uitzending),
+           uitzending != "",
+           is.na(slot) | slot == "",
+           is.na(herhvan) | herhvan == ""
+    ) |> pull(.sheet_row)
+  
+  requests <- list(
+    list(
+      updateSheetProperties = list(
+        properties = list(
+          sheetId = sheet_id,
+          gridProperties = list(frozenRowCount = 1)
+        ),
+        fields = "gridProperties.frozenRowCount"
+      )
+    ),
+    
+    list(
+      repeatCell = list(
+        range = list(
+          sheetId = sheet_id,
+          startRowIndex = 0,
+          endRowIndex = 1,
+          startColumnIndex = 0,
+          endColumnIndex = n_cols
+        ),
+        cell = list(
+          userEnteredFormat = list(
+            backgroundColor = header_fill,
+            horizontalAlignment = "CENTER",
+            textFormat = list(bold = TRUE),
+            borders = list(
+              bottom = list(
+                style = "SOLID",
+                width = 1,
+                color = rgb(160, 160, 160)
+              )
+            )
+          )
+        ),
+        fields = "userEnteredFormat(backgroundColor,horizontalAlignment,textFormat,borders)"
+      )
+    )
+  )
+  
+  if (!is.na(checkbox_index)) {
+    requests <- c(
+      requests,
+      list(
+        list(
+          setDataValidation = list(
+            range = list(
+              sheetId = sheet_id,
+              startRowIndex = 1,
+              endRowIndex = n_rows,
+              startColumnIndex = checkbox_index,
+              endColumnIndex = checkbox_index + 1L
+            ),
+            rule = list(
+              condition = list(type = "BOOLEAN"),
+              strict = TRUE,
+              showCustomUi = TRUE
+            )
+          )
+        )
+      )
+    )
+  }
+  
+  # section_requests <- map(section_rows, 
+  #                         \(r) {
+  #                           list(
+  #                             repeatCell = list(
+  #                               range = list(
+  #                                 sheetId = sheet_id,
+  #                                 startRowIndex = r - 1L,
+  #                                 endRowIndex = r,
+  #                                 startColumnIndex = 0,
+  #                                 endColumnIndex = min(n_cols, 7)
+  #                               ),
+  #                               cell = list(
+  #                                 userEnteredFormat = list(
+  #                                   backgroundColor = section_fill,
+  #                                   textFormat = list(
+  #                                     foregroundColor = rgb(255, 0, 0)
+  #                                   )
+  #                                 )
+  #                               ),
+  #                               fields = "userEnteredFormat(backgroundColor,textFormat)"
+  #                             )
+  #                           )
+  #                         })
+  
+  column_widths <- c(70, 135, 67, 235, 135, 67, 106, 63, 414)
+  
+  width_requests <- imap(column_widths[seq_len(min(length(column_widths), n_cols))],
+                         \(width, i) {
+                           list(
+                             updateDimensionProperties = list(
+                               range = list(
+                                 sheetId = sheet_id,
+                                 dimension = "COLUMNS",
+                                 startIndex = i - 1L,
+                                 endIndex = i
+                               ),
+                               properties = list(pixelSize = width),
+                               fields = "pixelSize"
+                             )
+                           )
+                         })
+  
+  requests <- c(requests, width_requests)
+  
+  req <- request_generate(endpoint = "sheets.spreadsheets.batchUpdate",
+                          params = list(spreadsheetId = as_sheets_id(ss), requests = requests))
+  
+  request_make(req)
+  
+  invisible(data)
+}
+
+# - also: keep latest 3 and preserve format
+append_week <- function(ss, sheet, new_rows) {
+  
+  sheet_append(ss = ss, data = new_rows, sheet = sheet)
+  
+  current_data <- read_sheet(ss = ss, sheet = sheet) |>
+    mutate(.sheet_row = row_number() + 1,
+           .run_number = parse_integer(str_extract(uitz_week, "^[0-9]+"))) |>
+    filter(!is.na(.run_number))
+  
+  runs <- current_data |> distinct(.run_number) |> arrange(.run_number) |> pull(.run_number)
+  
+  if (length(runs) <= 3) {
+    format_pl_sheet(ss = ss, sheet = sheet)
+    return(invisible(current_data |> select(-.sheet_row, -.run_number)))
+  }
+  
+  oldest_runs <- runs[seq_len(length(runs) - 3)]
+  
+  rows_to_delete <- current_data |> filter(.run_number %in% oldest_runs) |> arrange(.sheet_row)
+  
+  expected_rows <- seq(min(rows_to_delete$.sheet_row), max(rows_to_delete$.sheet_row))
+  
+  if (!identical(rows_to_delete$.sheet_row, expected_rows)) {
+    stop("Rows to delete are not contiguous. Refusing to delete.")
+  }
+  
+  delete_range <- glue("{min(rows_to_delete$.sheet_row)}:{max(rows_to_delete$.sheet_row)}")
+  
+  range_delete(ss = ss, sheet = sheet, range = delete_range, shift = "up")
+  
+  format_pl_sheet(ss = ss, sheet = sheet)
+  
+  invisible(rows_to_delete)
+}
