@@ -1,8 +1,9 @@
 # - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
-# remove all rows from week
+# remove all rows from week X site Y
 # - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
-begin_ts <- force_tz(ymd_hms("2026-06-11 12:50:00", quiet = T), tzone = "Europe/Amsterdam")
+begin_ts <- force_tz(ymd_hms("2026-06-11 12:55:00", quiet = T), tzone = "Europe/Amsterdam")
 end_ts <- begin_ts + days(7L)
+site_id <- 2L
 
 # load SQL
 sql <- read_file("SQL/remove_week.sql")
@@ -15,17 +16,27 @@ statements <- sql |>
   discard(\(x) x == "")
 
 # get query definition that needs variable binding
-bind_stmt <- which(str_detect(statements, "--\\s*@bind:\\s*insert_values"))
+bind_stmt_ins <- which(str_detect(statements, "--\\s*@bind:\\s*insert_values"))
+bind_stmt_del <- which(str_detect(statements, "--\\s*@bind:\\s*delete those broadcasts"))
 
 # execute
 walk(seq_along(statements), \(i) {
-  if (i == bind_stmt) {
+  if (i == bind_stmt_ins) {
     dbExecute(
-      con,
+      con_cpnm,
       statements[[i]],
-      params = list(fmt_ts(begin_ts), fmt_ts(end_ts))
+      params = list(fmt_ts(begin_ts), fmt_ts(end_ts), site_id)
+    )
+  } else if (i == bind_stmt_del) {
+    dbExecute(
+      con_cpnm,
+      statements[[i]],
+      params = site_id
     )
   } else {
-    dbExecute(con, statements[[i]])
+    dbExecute(
+      con_cpnm, 
+      statements[[i]]
+    )
   }
 })

@@ -1,4 +1,4 @@
--- select all episodes that have broadcasts on CZ this week
+-- select all episodes that have broadcasts on <site_id> this week
 drop table if exists cpnm_deletes;
 -- @bind: insert_values
 CREATE TABLE cpnm_deletes (
@@ -8,17 +8,17 @@ AS
 SELECT DISTINCT e.id
 FROM entries b JOIN entries e ON e.id = b.parent_id
 WHERE b.type = 'broadcast'
-  AND b.site_id = 1
   AND b.deleted_at IS NULL
   AND b.dates->>'$.start' BETWEEN ? AND ?
+  AND b.site_id = ?
   AND e.type = 'episode'
   AND e.deleted_at IS NULL
 ;
--- delete those broadcasts
+-- @bind: delete those broadcasts
 DELETE b
 FROM entries b JOIN cpnm_deletes c ON c.id = b.parent_id
 WHERE b.type = 'broadcast'
-  AND b.site_id = 1
+  AND b.site_id = ?
 ;
 -- delete taxonomables of episodes no longer referencing any active broadcasts
 DELETE txb
