@@ -1,5 +1,5 @@
 # - - - - - - - - - - - - - - - - - - - - -
-# Create a Weekly Playout
+# Create next Weekly Playout for WoJ
 # - - - - - - - - - - - - - - - - - - - - -
 
 # init & cfg ----
@@ -31,8 +31,7 @@ repeat {
       break
     })
   
-  where_to_continue <- max(gws_plws_raw$uitzending, na.rm = T)
-  where_to_continue <- ymd("2026-06-18")
+  where_to_continue <- ymd_hm(max(gws_plws_raw$uitzending, na.rm = T), quiet = T)
   hour(where_to_continue) <- 12
   minute(where_to_continue) <- 55
   where_to_stop <- where_to_continue + days(7L)
@@ -69,9 +68,16 @@ repeat {
   gws_week_lac <- db_week |> left_join(db_lacies, by = join_by(ep_id))
   
   # . get catalogue ----
-  catalg <- gws_clock_catalg_raw |> select(catalg_key = `key-modelrooster`, title = `titel-NL`, 
-                                           server = `cz-playout-mac`, uitzendtype, chain = `episode-chain`)
-  catalg_woj <- catalg |> filter(str_detect(uitzendtype, "_woj") & chain != "#NONE#")
+  catalg <- gws_clock_catalg_raw |> select(
+    catalg_key = `key-modelrooster`,
+    title = `titel-NL`,
+    server = `cz-playout-mac`,
+    uitzendtype,
+    chain = `episode-chain`
+  )
+  
+  catalg_woj <- catalg |> filter(str_detect(uitzendtype, "_woj") &
+                                   chain != "#NONE#")
   
   # . tibble for GWS
   gws_week <- gws_week_lac |> 
@@ -79,26 +85,30 @@ repeat {
     filter(is.na(uitzendtype) | uitzendtype != "non-stop") |> 
     mutate(min_bc_start = if_else(min_bc_start == bc_start, NA_character_, min_bc_start),
            source = case_when(!is.na(fn) ~ "LaCie", 
-                              ep_title %in% catalg_woj$title & !is.na(min_bc_start) ~ "WoJ-pc herh",
-                              ep_title %in% catalg_woj$title ~ "WoJ-pc vers",
+                              ep_title %in% catalg_woj$title & !is.na(min_bc_start) ~ "WoJ-pc replay",
+                              ep_title %in% catalg_woj$title ~ "WoJ-pc new",
                               TRUE ~ "Uitzendmac"),
            slot = to_slot_key(ymd_hms(bc_start, quiet = T, tz = TZ_AM)),
-           hh_slot = if_else(source %in% c("Uitzendmac", "WoJ-pc herh"), 
+           hh_slot = if_else(source %in% c("Uitzendmac", "WoJ-pc replay"), 
                              to_slot_key(ymd_hms(min_bc_start, quiet = T, tz = TZ_AM)),
                              NA_character_),
            uitz_wk = where_to_continue |>
-             (\(x) sprintf("%d-%02d", isoyear(x), isoweek(x)))()) |> 
+             (\(x) sprintf("%d-%02d", isoyear(x), isoweek(x)))(),
+           bc_start = bc_start |> str_sub(end = -4) |> str_replace(" ", "  "),
+           min_bc_start = min_bc_start |> str_sub(end = -4) |> str_replace(" ", "  "),
+           gereed = FALSE) |> 
     select(uitz_wk, 
            uitzending = bc_start, 
            slot,
            programma = ep_title, 
            herhaling_van = min_bc_start, 
            hh_slot,
-           source) |> 
+           source,
+           gereed) |> 
     distinct() |> 
     arrange(source, programma)
   
-  append_week(ss = config$gws_playlistweeks, sheet = "WORLD_OF_JAZZ")
+  append_week(ss = config$gws_playlistweeks, sheet = "WORLD_OF_JAZZ", new_rows = gws_week)
   
   # Exit from MCL
   break
