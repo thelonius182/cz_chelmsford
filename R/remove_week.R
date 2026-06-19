@@ -1,9 +1,9 @@
 # - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
 # remove all rows from week X site Y
 # - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
-begin_ts <- force_tz(ymd_hms("2026-06-18 12:55:00", quiet = T), tzone = "Europe/Amsterdam")
+begin_ts <- force_tz(ymd_hms("2026-06-04 12:55:00", quiet = T), tzone = "Europe/Amsterdam")
 end_ts <- begin_ts + days(7L)
-site_id <- 2L
+site_id <- 1L
 
 # load SQL
 sql <- read_file("SQL/remove_week.sql")

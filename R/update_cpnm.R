@@ -1,7 +1,7 @@
 # = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = 
 # Shared script in explicit env = upd_cpnm_env. Required objects from global env:
 # - tib_clock:      sic
-# - con_cpnm:            connection to cpnm-db
+# - con_cpnm:       connection to cpnm-db
 # - episode_chains: sic
 # - lacie_chains:   sic
 # - log_slug:       name/slug of logfile 

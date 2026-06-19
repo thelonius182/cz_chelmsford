@@ -346,6 +346,8 @@ repeat {
   episode_chains <- chain_env$episode_chains
 
   # . get LaCie chains ----
+  db_lacies <- NULL
+  
   if (site_id == SITE$WORLD_OF_JAZZ) {
     
     # . check LaCie drive ----
@@ -388,7 +390,7 @@ repeat {
   db_lacies_upd <- result$lacie_chains_upd
   
   # store modified LaCie chains ----
-  if (site_id == SITE$WORLD_OF_JAZZ) {
+  if (site_id == SITE$WORLD_OF_JAZZ && !is.null(db_lacies_upd)) {
     dbe <- dbExecute(con_sqlite, "delete from lacie_stack")
     dba <- dbAppendTable(con_sqlite, name = "lacie_stack", value = db_lacies_upd)
     dbDisconnect(con_sqlite)
