@@ -359,14 +359,16 @@ woj_titles <- df_clock_cz_weekly |>
   mutate(is_replay = if_else(is.na(src), FALSE, TRUE)) |> 
   select(-src, -mac, -`dummy-1`, -slug) |> 
   pivot_longer(cols = c(genre_1, genre_2), names_to = NULL, values_to = "genre", values_drop_na = TRUE) |> 
+  filter(!is_replay) |> 
   select(slot_key,
          block,
          catalg_key,
          prod_type,
-         `redactie-NL`,
-         titel_NL,
-         uitzendtype,
-         is_replay) |> distinct() |> arrange(prod_type, titel_NL)
+         # `redactie-NL`,
+         # titel_NL,
+         uitzendtype) |> 
+  distinct() |> arrange(catalg_key, prod_type) |> 
+  filter(prod_type != str_sub(uitzendtype, 1, 1))
 
 # all current titles CZ ----
 tryCatch(

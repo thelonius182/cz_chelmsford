@@ -37,7 +37,7 @@ repeat {
       break
     })
   
-  where_to_continue <- ymd_hm(max(gws_plws_raw$uitzending, na.rm = T), quiet = T)
+  where_to_continue <- ymd(max(str_sub(gws_plws_raw$uitzendingen, 1, 10), na.rm = T), quiet = T)
   hour(where_to_continue) <- 12
   minute(where_to_continue) <- 55
   where_to_stop <- where_to_continue + days(7L)
@@ -67,14 +67,17 @@ repeat {
     inner_join(catalg, by = join_by(episode_chain == chain)) |>
     select(ep_id, catalg_key)
   
-  db_week_upd <- db_week |> rows_update(y = db_week_missing, by = "ep_id")
+  if (nrow(db_week_missing) > 0) {
+    db_week <- db_week |> rows_update(y = db_week_missing, by = "ep_id")
+  }
   
   # . get live bc-dates ----
-  bc_live <- czts_pres_raw |> filter(!is.na(Def) &
-                                       Status == "Live") |> transmute(bc_ymd = fmt_ymd(bc_ymd)) |> mutate(hh_van_live = T)
+  bc_live <- czts_pres_raw |> 
+    filter(!is.na(Def) &
+             Status == "Live") |> transmute(bc_ymd = fmt_ymd(bc_ymd)) |> mutate(hh_van_live = T)
   
   # . tibble for GWS
-  gws_week <- db_week_upd |>
+  gws_week <- db_week |>
     left_join(catalg, by = join_by(catalg_key)) |>
     mutate(min_bc_start_ymd = str_sub(min_bc_start, end = 10)) |>
     left_join(bc_live, by = join_by(min_bc_start_ymd == bc_ymd)) |>
@@ -114,23 +117,57 @@ repeat {
     ) |> distinct() |> 
     # arrange(mac, itunes_folder)
     # t1 <- gws_week |> select(itunes_folder, uitzending, herhaling_van) |>
-    mutate(opzoekdatum = if_else(is.na(herhaling_van), uitzending, herhaling_van)) |>
-    arrange(itunes_folder, opzoekdatum, herhaling_van) |>
+    mutate(audiofile = if_else(is.na(herhaling_van), uitzending, herhaling_van)) |>
+    arrange(itunes_folder, audiofile, herhaling_van) |>
     group_by(itunes_folder) |> 
     mutate(
-      collision = n_distinct(opzoekdatum) > 1,
+      collision = n_distinct(audiofile) > 1,
       n_bcs = n(),
-      uitzending_van = if_else(n_bcs > 1L & !collision, paste(uitzending, collapse = ", "), uitzending),
-      slot_van = if_else(n_bcs > 1L & !collision, paste(slot, collapse = ", "), slot)
+      combi = n_bcs > 1L & !collision,
+      uitzendingen = if_else(combi, paste(sort(uitzending), collapse = ", "), uitzending),
+      slots = if_else(combi, paste(slot, collapse = ", "), slot)
     ) |> ungroup() |>
-    mutate(itunes_map = if_else(!is.na(herhaling_van) & collision,
-                                paste0(itunes_folder, " (herhaling)"),
-                                itunes_folder)
+    mutate(playlist = if_else(!is.na(herhaling_van) & collision,
+                              paste0(itunes_folder, " (herhaling)"),
+                              itunes_folder
+           ),
+           type = case_when(hh_van_live ~           "HiJack",
+                            !is.na(herhaling_van) ~ "herhaling",
+                            combi ~                 "combi n/h",
+                            TRUE ~                  "nieuw"
+           ),
+           sorting = case_when(type == "HiJack"                    ~ 1L,
+                               programma == "Geen Dag zonder Bach" ~ 2L,
+                               str_detect(programma, "Nacht")      ~ 3L,
+                               type == "combi n/h"                 ~ 4L,
+                               type == "nieuw"                     ~ 5L,
+                               TRUE                                ~ 6L
+           )
     ) |>
     filter(n_bcs == 1 | collision | is.na(herhaling_van)) |> 
-    select(-uitzending) |> distinct()
+    select(uitz_wk,
+           mac,
+           programma,
+           type,
+           duur,
+           audiofile,
+           hh_van_slot,
+           playlist,
+           uitzendingen,
+           slots,
+           gereed,
+           sorting
+    ) |> distinct() |> arrange(mac, sorting, audiofile) |> 
+    mutate(banding = case_when(type == "HiJack"                    ~ 6L,
+                               mac == "LGM"                        ~ 1L,
+                               programma == "Geen Dag zonder Bach" ~ 2L,
+                               str_detect(programma, "Nacht")      ~ 3L,
+                               row_number() %% 2 == 0              ~ 4L,
+                               TRUE                                ~ 5L
+                     )
+    )
   
-  append_week(ss = config$gws_playlistweeks, sheet = "WORLD_OF_JAZZ", new_rows = gws_week)
+  append_week(ss = config$gws_playlistweeks, sheet = "CONCERTZENDER", new_rows = gws_week)
   
   # Exit from MCL
   break

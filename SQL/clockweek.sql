@@ -14,6 +14,7 @@ from entries e join entries b on b.parent_id = e.id
 					     left join episode_catlg_keys k on k.ep_id = e.id 
 where e.deleted_at is null
   and e.type = 'episode'
+  and k.ep_catkey != 'progjazz' # progjazz episodes have 2 cat.keys; legacy artefact
   and b.dates->>'$.start' between ? and ?
   and b.site_id = ?
 order by 1
