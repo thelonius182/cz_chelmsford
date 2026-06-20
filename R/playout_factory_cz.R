@@ -26,7 +26,11 @@ repeat {
       gs4_auth(email = "cz.teamservice@concertzender.nl", scopes = "spreadsheets")
       gws_plws_raw <- read_sheet(ss = config$gws_playlistweeks, sheet = "CONCERTZENDER")
       gws_clock_catalg_raw <- read_sheet(ss = config$gws_clock_catalogue, sheet = "data")
-      czts_pres_raw <- read_sheet(ss = config$czts_pres, sheet = "presentatie")
+      czts_pres_raw <- read_sheet(ss = config$czts_pres,
+                                  sheet = "presentatie",
+        .name_repair = ~ c("datum", "bc_ymd", "slotElem", "slotID", "dum1", "uren", "Presentatie", "Techniek",
+                            "Status", "Def", "Bijzonderheden", "Studio_1_res", "Studio_2_res", "hdn_FullDate",
+                            "hulp1", "hulp2", "hulp3", "hulp4", "liveType", "hum", "dockrefs_p2m"))
     },
     error = function(e1) {
       flog.error("Load error GD-sheet(s): %s", conditionMessage(e1), name = log_slug)
@@ -44,64 +48,87 @@ repeat {
   db_week <- dbGetQuery(con_cpnm, statement = read_file("SQL/clockweek.sql"), 
                         params = list(where_to_continue, where_to_stop, SITE$CONCERTZENDER)) |> 
     rename(catalg_key = playlist)
+
+  # . get catalogue ----
+  catalg <- gws_clock_catalg_raw |> select(
+    catalg_key = `key-modelrooster`,
+    title = `titel-NL`,
+    mac = `cz-playout-mac`,
+    uitzendtype,
+    chain = `episode-chain`,
+    nipper_mogelijk
+  )
   
   # fallback for missing catalogue keys
+  # - NB: assuming clockfactory ran right before this, as this normally happens
   epi_chains <- read_rds("resources/episode_chains.RDS")
-  db_week_missing <- db_week |> filter(is.na(catalg_key)) |> select(ep_id) |> 
-    inner_join(epi_chains, by = join_by(ep_id == episode_entry_id)) |> 
-    inner_join(catalg, by = join_by(episode_chain == chain)) |> 
+  db_week_missing <- db_week |> filter(is.na(catalg_key)) |> select(ep_id) |>
+    inner_join(epi_chains, by = join_by(ep_id == episode_entry_id)) |>
+    inner_join(catalg, by = join_by(episode_chain == chain)) |>
     select(ep_id, catalg_key)
   
   db_week_upd <- db_week |> rows_update(y = db_week_missing, by = "ep_id")
-
-  # . get catalogue ----
-  catalg <- gws_clock_catalg_raw |> select(catalg_key = `key-modelrooster`,
-                                           title = `titel-NL`,
-                                           mac = `cz-playout-mac`,
-                                           uitzendtype,
-                                           chain = `episode-chain`,
-                                           nipper_mogelijk)
-
+  
   # . get live bc-dates ----
-  bc_live <- czts_pres_raw |> rename(bc_ymd = `...2`) |> 
-    filter(!is.na(Def) & Status == "Live") |> 
-    transmute(bc_ymd = fmt_ymd(bc_ymd)) |> 
-    mutate(was_live = T)
+  bc_live <- czts_pres_raw |> filter(!is.na(Def) &
+                                       Status == "Live") |> transmute(bc_ymd = fmt_ymd(bc_ymd)) |> mutate(hh_van_live = T)
   
   # . tibble for GWS
-  gws_week <- db_week_upd |> 
-    left_join(catalg, by = join_by(catalg_key)) |> 
-    mutate(min_bc_start_ymd = str_sub(min_bc_start, end = 10)) |> 
-    left_join(bc_live, by = join_by(min_bc_start_ymd == bc_ymd)) |> 
-    filter(nipper_mogelijk == "N") |> 
-    mutate(min_bc_start = if_else(min_bc_start == bc_start, NA_character_, min_bc_start),
-           slot = to_slot_key(ymd_hms(bc_start, quiet = T, tz = TZ_AM)),
-           hh_slot = if_else(!is.na(min_bc_start),
-                             to_slot_key(ymd_hms(min_bc_start, quiet = T, tz = TZ_AM)),
-                             NA_character_),
-           uitz_wk = where_to_continue |>
-             (\(x) sprintf("%d-%02d", isoyear(x), isoweek(x)))(),
-           bc_start = bc_start |> str_sub(end = -4) |> str_replace(" ", "  "),
-           min_bc_start = min_bc_start |> str_sub(end = -4) |> str_replace(" ", "  "),
-           duur = as.integer(duur / 60),
-           was_live = if_else(is.na(was_live) | !was_live | uitzendtype != "live", FALSE, TRUE),
-           gereed = FALSE) |> 
-    filter(uitzendtype != "live" | !is.na(min_bc_start)) |> 
-    select(mac,
-           programma = title,
-           duur,
-           herhaling_van = min_bc_start, 
-           hh_slot,
-           was_live,
-           itunes_folder = catalg_key,
-           uitzendtype,
-           gereed,
-           uitz_wk, 
-           uitzending = bc_start, 
-           slot
-           # source,
+  gws_week <- db_week_upd |>
+    left_join(catalg, by = join_by(catalg_key)) |>
+    mutate(min_bc_start_ymd = str_sub(min_bc_start, end = 10)) |>
+    left_join(bc_live, by = join_by(min_bc_start_ymd == bc_ymd)) |>
+    filter(nipper_mogelijk == "N") |>
+    mutate(
+      min_bc_start = if_else(min_bc_start == bc_start, NA_character_, min_bc_start),
+      slot = to_slot_key(ymd_hms(
+        bc_start, quiet = T, tz = TZ_AM
+      )),
+      hh_van_slot = if_else(!is.na(min_bc_start), to_slot_key(ymd_hms(
+        min_bc_start, quiet = T, tz = TZ_AM
+      )), NA_character_),
+      uitz_wk = where_to_continue |>
+        (\(x) sprintf("%d-%02d", isoyear(x), isoweek(x)))(),
+      bc_start = bc_start |> str_sub(end = -4) |> str_replace(" ", "  "),
+      min_bc_start = min_bc_start |> str_sub(end = -4) |> str_replace(" ", "  "),
+      duur = as.integer(duur / 60),
+      hh_van_live = if_else(is.na(hh_van_live) |
+                           !hh_van_live | uitzendtype != "live", FALSE, TRUE),
+      itunes_folder = str_remove(catalg_key, " S\\d$"),
+      gereed = FALSE
+    ) |>
+    filter(uitzendtype != "live" | !is.na(min_bc_start)) |>
+    select(
+      mac,
+      programma = title,
+      duur,
+      herhaling_van = min_bc_start,
+      hh_van_slot,
+      hh_van_live,
+      itunes_folder,
+      uitzendtype,
+      gereed,
+      uitz_wk,
+      uitzending = bc_start,
+      slot
     ) |> distinct() |> 
-    arrange(mac, itunes_folder)
+    # arrange(mac, itunes_folder)
+    # t1 <- gws_week |> select(itunes_folder, uitzending, herhaling_van) |>
+    mutate(opzoekdatum = if_else(is.na(herhaling_van), uitzending, herhaling_van)) |>
+    arrange(itunes_folder, opzoekdatum, herhaling_van) |>
+    group_by(itunes_folder) |> 
+    mutate(
+      collision = n_distinct(opzoekdatum) > 1,
+      n_bcs = n(),
+      uitzending_van = if_else(n_bcs > 1L & !collision, paste(uitzending, collapse = ", "), uitzending),
+      slot_van = if_else(n_bcs > 1L & !collision, paste(slot, collapse = ", "), slot)
+    ) |> ungroup() |>
+    mutate(itunes_map = if_else(!is.na(herhaling_van) & collision,
+                                paste0(itunes_folder, " (herhaling)"),
+                                itunes_folder)
+    ) |>
+    filter(n_bcs == 1 | collision | is.na(herhaling_van)) |> 
+    select(-uitzending) |> distinct()
   
   append_week(ss = config$gws_playlistweeks, sheet = "WORLD_OF_JAZZ", new_rows = gws_week)
   
@@ -112,4 +139,3 @@ repeat {
 # Cleanup ----
 dbDisconnect(con_cpnm)
 close_tunnel(tunnel)
-# dbDisconnect(con_sqlite)
