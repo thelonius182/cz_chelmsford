@@ -814,84 +814,80 @@ append_week <- function(ss, sheet, new_rows) {
   after_cleanup_raw <- read_sheet(ss, sheet = sheet)
   sheet_resize(ss = ss, sheet = sheet, nrow = nrow(after_cleanup_raw) + 1L, exact = TRUE)
   
-  # re-read because row numbers may have shifted
-  after_cleanup <- read_sheet(ss, sheet = sheet) |>
-    mutate(
-      .sheet_row = row_number() + 1L,
-      .run_number = parse_integer(str_remove(uitz_wk, "-"))) |>
-    filter(!is.na(.run_number))
-  
-  newest_run <-after_cleanup |>
-    summarise(.run_number = max(.run_number, na.rm = TRUE)) |>
-    pull(.run_number)
-  
-  new_week_rows <- after_cleanup |>
-    filter(.run_number == newest_run) |>
-    arrange(.sheet_row)
-  
-  actual_new_rows <- as.integer(new_week_rows$.sheet_row)
-  
-  if (length(actual_new_rows) > 1L && any(diff(actual_new_rows) != 1L)) {
-    stop("New week rows are not contiguous. Refusing to format.", call. = FALSE)
-  }
-  
-  start_row_index <- min(actual_new_rows) - 1L
-  end_row_index   <- max(actual_new_rows)
-  sheet_id <- sheet_properties(ss) |> filter(name == sheet) |> pull(id)
-  checkbox_col_index <- match("gereed", names(after_cleanup |> select(-.sheet_row, -.run_number))) - 1L
-  
-  # if (is.na(checkbox_col_index)) {
-  #   stop("Column not found: ", checkbox_col, call. = FALSE)
+  # # re-read because row numbers may have shifted
+  # after_cleanup <- read_sheet(ss, sheet = sheet) |>
+  #   mutate(
+  #     .sheet_row = row_number() + 1L,
+  #     .run_number = parse_integer(str_remove(uitz_wk, "-"))) |>
+  #   filter(!is.na(.run_number))
+  # 
+  # newest_run <-after_cleanup |>
+  #   summarise(.run_number = max(.run_number, na.rm = TRUE)) |>
+  #   pull(.run_number)
+  # 
+  # new_week_rows <- after_cleanup |>
+  #   filter(.run_number == newest_run) |>
+  #   arrange(.sheet_row)
+  # 
+  # actual_new_rows <- as.integer(new_week_rows$.sheet_row)
+  # 
+  # if (length(actual_new_rows) > 1L && any(diff(actual_new_rows) != 1L)) {
+  #   stop("New week rows are not contiguous. Refusing to format.", call. = FALSE)
   # }
-  
-  req <- request_generate(
-    endpoint = "sheets.spreadsheets.batchUpdate",
-    params = list(
-      spreadsheetId = as_sheets_id(ss),
-      requests = list(
-        list(
-          repeatCell = list(
-            range = list(
-              sheetId = sheet_id,
-              startRowIndex = start_row_index,
-              endRowIndex = end_row_index
-            ),
-            cell = list(
-              userEnteredFormat = list(
-                textFormat = list(
-                  fontFamily = "Roboto"
-                )
-              )
-            ),
-            fields = "userEnteredFormat.textFormat.fontFamily"
-          )
-        ),
-        list(
-          repeatCell = list(
-            range = list(
-              sheetId = sheet_id,
-              startRowIndex = start_row_index,
-              endRowIndex = end_row_index,
-              startColumnIndex = checkbox_col_index,
-              endColumnIndex = checkbox_col_index + 1L
-            ),
-            cell = list(
-              dataValidation = list(
-                condition = list(
-                  type = "BOOLEAN"
-                ),
-                strict = TRUE
-              )
-            ),
-            fields = "dataValidation"
-          )
-        )
-      )
-    )
-  )
-  
-  resp <- request_make(req)
-  gargle::response_process(resp)
+  # 
+  # start_row_index <- min(actual_new_rows) - 1L
+  # end_row_index   <- max(actual_new_rows)
+  # sheet_id <- sheet_properties(ss) |> filter(name == sheet) |> pull(id)
+  # checkbox_col_index <- match("gereed", names(after_cleanup |> select(-.sheet_row, -.run_number))) - 1L
+  # 
+  # req <- request_generate(
+  #   endpoint = "sheets.spreadsheets.batchUpdate",
+  #   params = list(
+  #     spreadsheetId = as_sheets_id(ss),
+  #     requests = list(
+  #       list(
+  #         repeatCell = list(
+  #           range = list(
+  #             sheetId = sheet_id,
+  #             startRowIndex = start_row_index,
+  #             endRowIndex = end_row_index
+  #           ),
+  #           cell = list(
+  #             userEnteredFormat = list(
+  #               textFormat = list(
+  #                 fontFamily = "Roboto"
+  #               )
+  #             )
+  #           ),
+  #           fields = "userEnteredFormat.textFormat.fontFamily"
+  #         )
+  #       ),
+  #       list(
+  #         repeatCell = list(
+  #           range = list(
+  #             sheetId = sheet_id,
+  #             startRowIndex = start_row_index,
+  #             endRowIndex = end_row_index,
+  #             startColumnIndex = checkbox_col_index,
+  #             endColumnIndex = checkbox_col_index + 1L
+  #           ),
+  #           cell = list(
+  #             dataValidation = list(
+  #               condition = list(
+  #                 type = "BOOLEAN"
+  #               ),
+  #               strict = TRUE
+  #             )
+  #           ),
+  #           fields = "dataValidation"
+  #         )
+  #       )
+  #     )
+  #   )
+  # )
+  # 
+  # resp <- request_make(req)
+  # gargle::response_process(resp)
   
   invisible(rows_to_delete)
 }

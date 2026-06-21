@@ -115,8 +115,6 @@ repeat {
       uitzending = bc_start,
       slot
     ) |> distinct() |> 
-    # arrange(mac, itunes_folder)
-    # t1 <- gws_week |> select(itunes_folder, uitzending, herhaling_van) |>
     mutate(audiofile = if_else(is.na(herhaling_van), uitzending, herhaling_van)) |>
     arrange(itunes_folder, audiofile, herhaling_van) |>
     group_by(itunes_folder) |> 
@@ -139,9 +137,7 @@ repeat {
            sorting = case_when(type == "HiJack"                    ~ 1L,
                                programma == "Geen Dag zonder Bach" ~ 2L,
                                str_detect(programma, "Nacht")      ~ 3L,
-                               type == "combi n/h"                 ~ 4L,
-                               type == "nieuw"                     ~ 5L,
-                               TRUE                                ~ 6L
+                               TRUE                                ~ 4L
            )
     ) |>
     filter(n_bcs == 1 | collision | is.na(herhaling_van)) |> 
@@ -157,7 +153,8 @@ repeat {
            slots,
            gereed,
            sorting
-    ) |> distinct() |> arrange(mac, sorting, audiofile) |> 
+    ) |> distinct() |> 
+    arrange(mac, sorting, audiofile) |> 
     mutate(banding = case_when(type == "HiJack"                    ~ 6L,
                                mac == "LGM"                        ~ 1L,
                                programma == "Geen Dag zonder Bach" ~ 2L,
