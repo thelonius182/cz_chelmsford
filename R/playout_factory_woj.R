@@ -40,7 +40,23 @@ repeat {
 
   # get week from cpnm-db ----  
   db_week <- dbGetQuery(con_cpnm, statement = read_file("SQL/clockweek.sql"), 
-                        params = list(where_to_continue, where_to_stop, SITE$WORLD_OF_JAZZ))
+                        params = list(where_to_continue, where_to_stop, SITE$WORLD_OF_JAZZ)
+             ) |> rename(catalg_key = playlist)
+  
+  # . get catalogue ----
+  catalg <- gws_clock_catalg_raw |> select(
+    catalg_key = `key-modelrooster`,
+    title = `titel-NL`,
+    server = `cz-playout-mac`,
+    uitzendtype,
+    chain = `episode-chain`
+  )
+  
+  catalg_woj <- catalg |> filter(str_detect(uitzendtype, "_woj") &
+                                   chain != "#NONE#")
+  
+  catalg_lacie <- catalg |> filter(str_detect(uitzendtype, "lacie") &
+                                   chain != "#NONE#")
   
   # . check LaCie drive ----
   lacie_root <- config$lacie_root
@@ -65,23 +81,24 @@ repeat {
   sdb <- sync_db(con_sqlite = con_sqlite, fs = fs_lacies)
   db_lacies <- dbGetQuery(con_sqlite, "select * from lacie_stack order by chain, pos;")
   
+  # fallback for missing catalogue keys
+  # - NB: assuming clockfactory ran right before this, as this normally happens
+  epi_chains <- read_rds("resources/episode_chains.RDS")
+  db_week_missing <- db_week |> filter(is.na(catalg_key)) |> select(ep_id) |>
+    inner_join(epi_chains, by = join_by(ep_id == episode_entry_id)) |>
+    distinct() |> 
+    inner_join(catalg_lacie, by = join_by(episode_chain == chain)) |>
+    select(ep_id, catalg_key)
+  
+  if (nrow(db_week_missing) > 0) {
+    db_week <- db_week |> rows_update(y = db_week_missing, by = "ep_id")
+  }
+  
   gws_week_lac <- db_week |> left_join(db_lacies, by = join_by(ep_id))
-  
-  # . get catalogue ----
-  catalg <- gws_clock_catalg_raw |> select(
-    catalg_key = `key-modelrooster`,
-    title = `titel-NL`,
-    server = `cz-playout-mac`,
-    uitzendtype,
-    chain = `episode-chain`
-  )
-  
-  catalg_woj <- catalg |> filter(str_detect(uitzendtype, "_woj") &
-                                   chain != "#NONE#")
   
   # . tibble for GWS
   gws_week <- gws_week_lac |> 
-    left_join(catalg, by = join_by(playlist == catalg_key)) |> 
+    left_join(catalg, by = join_by(catalg_key)) |> 
     filter(is.na(uitzendtype) | uitzendtype != "non-stop") |> 
     mutate(min_bc_start = if_else(min_bc_start == bc_start, NA_character_, min_bc_start),
            source = case_when(!is.na(fn) ~ "LaCie", 
@@ -96,7 +113,9 @@ repeat {
              (\(x) sprintf("%d-%02d", isoyear(x), isoweek(x)))(),
            bc_start = bc_start |> str_sub(end = -4) |> str_replace(" ", "  "),
            min_bc_start = min_bc_start |> str_sub(end = -4) |> str_replace(" ", "  "),
-           gereed = FALSE) |> 
+           gereed = FALSE,
+           banding = 0L
+    ) |> 
     select(uitz_wk, 
            uitzending = bc_start, 
            slot,
@@ -104,8 +123,16 @@ repeat {
            herhaling_van = min_bc_start, 
            hh_slot,
            source,
-           gereed) |> 
+           gereed,
+           banding
+    ) |> 
     distinct() |> 
+    add_row(uitz_wk = where_to_continue |>
+              (\(x) sprintf("%d-%02d", isoyear(x), isoweek(x)))(), 
+            programma = str_sub(fmt_ts(where_to_continue), 1, 10),
+            source = "A",
+            banding = 1L
+    ) |> 
     arrange(source, programma)
   
   append_week(ss = config$gws_playlistweeks, sheet = "WORLD_OF_JAZZ", new_rows = gws_week)

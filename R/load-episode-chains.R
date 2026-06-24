@@ -75,7 +75,8 @@ episode_chains <- joined_slots_a |>
   filter(site_id == chain_site) |> 
   arrange(episode_chain, desc(dttm_start)) |> 
   mutate(is_replay = F) |> 
-  select(slot = dttm_start, slot_key, site_id, is_replay, episode_entry_id = ep_id, episode_chain, has_content)
+  select(slot = dttm_start, slot_key, site_id, is_replay, episode_entry_id = ep_id, episode_chain, has_content) |> 
+  distinct()
 
 # store it for playout_factory ----
 write_rds(episode_chains, "resources/episode_chains.RDS")

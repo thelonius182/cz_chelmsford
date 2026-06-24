@@ -46,8 +46,8 @@ repeat {
 
   # get week from cpnm-db ----  
   db_week <- dbGetQuery(con_cpnm, statement = read_file("SQL/clockweek.sql"), 
-                        params = list(where_to_continue, where_to_stop, SITE$CONCERTZENDER)) |> 
-    rename(catalg_key = playlist)
+                        params = list(where_to_continue, where_to_stop, SITE$CONCERTZENDER)
+             ) |> rename(catalg_key = playlist)
 
   # . get catalogue ----
   catalg <- gws_clock_catalg_raw |> select(
@@ -61,9 +61,10 @@ repeat {
   
   # fallback for missing catalogue keys
   # - NB: assuming clockfactory ran right before this, as this normally happens
-  epi_chains <- read_rds("resources/episode_chains.RDS")
+  epi_chains <- read_rds("resources/episode_chains.RDS") |> distinct()
   db_week_missing <- db_week |> filter(is.na(catalg_key)) |> select(ep_id) |>
     inner_join(epi_chains, by = join_by(ep_id == episode_entry_id)) |>
+    distinct() |> 
     inner_join(catalg, by = join_by(episode_chain == chain)) |>
     select(ep_id, catalg_key)
   
@@ -84,20 +85,18 @@ repeat {
     filter(nipper_mogelijk == "N") |>
     mutate(
       min_bc_start = if_else(min_bc_start == bc_start, NA_character_, min_bc_start),
-      slot = to_slot_key(ymd_hms(
-        bc_start, quiet = T, tz = TZ_AM
-      )),
-      hh_van_slot = if_else(!is.na(min_bc_start), to_slot_key(ymd_hms(
-        min_bc_start, quiet = T, tz = TZ_AM
-      )), NA_character_),
-      uitz_wk = where_to_continue |>
-        (\(x) sprintf("%d-%02d", isoyear(x), isoweek(x)))(),
+      slot = to_slot_key(ymd_hms(bc_start, quiet = T, tz = TZ_AM)),
+      hh_van_slot = if_else(!is.na(min_bc_start), 
+                            to_slot_key(ymd_hms(min_bc_start, quiet = T, tz = TZ_AM)), 
+                            NA_character_),
+      uitz_wk = where_to_continue |> (\(x) sprintf("%d-%02d", isoyear(x), isoweek(x)))(),
       bc_start = bc_start |> str_sub(end = -4) |> str_replace(" ", "  "),
       min_bc_start = min_bc_start |> str_sub(end = -4) |> str_replace(" ", "  "),
       duur = as.integer(duur / 60),
-      hh_van_live = if_else(is.na(hh_van_live) |
-                           !hh_van_live | uitzendtype != "live", FALSE, TRUE),
-      itunes_folder = str_remove(catalg_key, " S\\d$"),
+      hh_van_live = if_else(is.na(hh_van_live) | !hh_van_live | uitzendtype != "live", 
+                            FALSE, 
+                            TRUE),
+      itunes_playlist = str_remove(catalg_key, " S\\d$"),
       gereed = FALSE
     ) |>
     filter(uitzendtype != "live" | !is.na(min_bc_start)) |>
@@ -108,7 +107,7 @@ repeat {
       herhaling_van = min_bc_start,
       hh_van_slot,
       hh_van_live,
-      itunes_folder,
+      itunes_playlist,
       uitzendtype,
       gereed,
       uitz_wk,
@@ -116,18 +115,19 @@ repeat {
       slot
     ) |> distinct() |> 
     mutate(audiofile = if_else(is.na(herhaling_van), uitzending, herhaling_van)) |>
-    arrange(itunes_folder, audiofile, herhaling_van) |>
-    group_by(itunes_folder) |> 
+    arrange(itunes_playlist, audiofile, herhaling_van) |>
+    group_by(itunes_playlist) |> 
     mutate(
       collision = n_distinct(audiofile) > 1,
       n_bcs = n(),
       combi = n_bcs > 1L & !collision,
-      uitzendingen = if_else(combi, paste(sort(uitzending), collapse = ", "), uitzending),
-      slots = if_else(combi, paste(slot, collapse = ", "), slot)
+      ord = list(order(uitzending)),
+      uitzendingen = if_else(combi, paste(uitzending[ord[[1]]], collapse = ", "), uitzending),
+      slots = if_else(combi, paste(slot[ord[[1]]], collapse = ", "), slot)
     ) |> ungroup() |>
     mutate(playlist = if_else(!is.na(herhaling_van) & collision,
-                              paste0(itunes_folder, " (herhaling)"),
-                              itunes_folder
+                              paste0(itunes_playlist, " (herhaling)"),
+                              itunes_playlist
            ),
            type = case_when(hh_van_live ~           "HiJack",
                             !is.na(herhaling_van) ~ "herhaling",
@@ -154,8 +154,14 @@ repeat {
            gereed,
            sorting
     ) |> distinct() |> 
+    add_row(uitz_wk = where_to_continue |>
+              (\(x) sprintf("%d-%02d", isoyear(x), isoweek(x)))(), 
+            mac = "CZ",
+            programma = str_sub(fmt_ts(where_to_continue), 1, 10), 
+            sorting = 0L) |> 
     arrange(mac, sorting, audiofile) |> 
-    mutate(banding = case_when(type == "HiJack"                    ~ 6L,
+    mutate(banding = case_when(sorting == 0L                       ~ 7L,
+                               type == "HiJack"                    ~ 6L,
                                mac == "LGM"                        ~ 1L,
                                programma == "Geen Dag zonder Bach" ~ 2L,
                                str_detect(programma, "Nacht")      ~ 3L,
