@@ -9,7 +9,7 @@ pacman::p_load(tidyr, dplyr, stringr, readr, lubridate, fs, futile.logger, DBI, 
 config <- read_yaml("config.yaml")
 fmt_ts <- stamp("1958-12-25 13:00:00", quiet = T, orders = "ymd HMS")
 fmt_ymd <- stamp("1958-12-25", quiet = T, orders = "ymd")
-log_slug <- "clof"
+log_slug <- "pof_cz"
 flap <- flog.appender(appender.file(config$log_appender_file), log_slug)
 TZ_AM <- "Europe/Amsterdam"
 SITE <- list(CONCERTZENDER = 1L, WORLD_OF_JAZZ = 2L)
@@ -35,7 +35,8 @@ repeat {
     error = function(e1) {
       flog.error("Load error GD-sheet(s): %s", conditionMessage(e1), name = log_slug)
       break
-    })
+    }
+  )
   
   where_to_continue <- ymd(max(str_sub(gws_plws_raw$uitzendingen, 1, 10), na.rm = T), quiet = T)
   hour(where_to_continue) <- 12
