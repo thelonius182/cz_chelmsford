@@ -1,81 +1,82 @@
 pacman::p_load(tidyr, dplyr, stringr, readr, lubridate, fs, futile.logger, DBI, digest, 
                purrr, httr, jsonlite, yaml, ssh, googlesheets4, glue, uuid, RMariaDB, RSQLite)
 
-config <- read_yaml("config.yaml")
-fmt_ts <- stamp("1958-12-25 13:00:00", quiet = T, orders = "ymd HMS")
-fmt_ymd <- stamp("1958-12-25", quiet = T, orders = "ymd")
-log_slug <- "pof_cz"
-flap <- flog.appender(appender.file(config$log_appender_file), log_slug)
-TZ_AM <- "Europe/Amsterdam"
-SITE <- list(CONCERTZENDER = 1L, WORLD_OF_JAZZ = 2L)
+as_slug <- function(pm_str) {
+  s1 <- str_replace_all(pm_str, "[^- [:word:]]", "")
+  s1 <- str_trim(string = s1, side = "both")
+  s1 <- str_replace_all(s1, " +", "-")
+  s1 <- str_replace_all(s1, "-+", "-") |> str_to_lower()
+  stringi::stri_trans_general(s1, "Latin-ASCII")
+}
 
-rls_date_fmt <- function(x, locale = "en_GB") {
+wdw_date_fmt <- function(x, locale = "en_GB") {
   str_c(day(x), format(x, "%b %Y", locale = locale), sep = " ")
 }
 
-rls_dagletters <- function(sched_name) {
-  # sched_name <- "2018-12-31_wo16-2_420_de-nacht-klassiek"
-  dag_kort <- str_sub(sched_name, 12, 13)
+day_mask <- function(slot) {
+  # slot <- "wo16-2"
+  nl_day <- str_sub(slot, 1, 2)
   
-  case_when(
-    dag_kort == "ma" ~ "_M_____",
-    dag_kort == "di" ~ "__T____",
-    dag_kort == "wo" ~ "___W___",
-    dag_kort == "do" ~ "____T__",
-    dag_kort == "vr" ~ "_____F_",
-    dag_kort == "za" ~ "______S",
-    TRUE             ~ "S______"
+  case_match(
+    nl_day,
+    "zo" ~ "S______",
+    "ma" ~ "_M_____",
+    "di" ~ "__T____",
+    "wo" ~ "___W___",
+    "do" ~ "____T__",
+    "vr" ~ "_____F_",
+    "za" ~ "______S"
   )
 }
 
-rls_lengte <- function(sched_name) {
-  # sched_name <- "2018-12-31_wo16-2_420_de-nacht-klassiek"
-  str_sub(sched_name, 19, 21)
+# bc_start as offset from midnight in 30 minute blocks
+# test: slot <- "wo16-2". SOLL = "32"
+slot_start_halfhour_index  <- function(slot) {
+  x <- as.integer(str_sub(slot, 3, 4))
+  as.character(2 * x)
 }
 
-rls_30m_blokken <- function(sched_name) {
-  # sched_name <- "2018-12-31_wo16-2_420_de-nacht-klassiek"
-  b1 <- as.integer(str_sub(sched_name, 14, 15))
+bc_wdw <- function(date_iso) {
+  # test: date_iso <- "2018-05-31". SOLL: c("31 May 2018", "1 Jun 2019")  
+  wdw_start <- ymd(date_iso, quiet = T)
+  wdw_stop <- wdw_start + days(1L)
   
-  as.character(2 * b1)
+  c(wdw_date_fmt(wdw_start), wdw_date_fmt(wdw_stop))
 }
 
-rls_venster <- function(sched_name) {
-  # sched_name <- "2018-12-31_wo00-2_420_de-nacht-klassiek"
-  venster_datum_start <- ymd(str_sub(sched_name, 1, 10), quiet = T)
-  venster_datum_stop <- venster_datum_start + days(1L)
+run_assembler <- function(cur_week, cur_mac) {
   
-  c(rls_date_fmt(venster_datum_start), rls_date_fmt(venster_datum_stop))
-}
+  rls_week <- cur_week |> filter(mac == cur_mac)
 
-build_rl_scripts <- function(rls_week) {
-  schedules_dir <- path(home_prop("home_radiologik"), "Schedule")
+  sched_home <- str_replace(config$rl_sched_home, "xxx", str_to_lower(cur_mac))
   start_number <- dir_ls(schedules_dir) |> length()
   
   rls_week |>
-    mutate(script_nr = start_number + row_number()) |>
+    mutate(
+      script_nr = start_number + row_number(),
+      schedules_dir = sched_home
+    ) |>
     group_split(row_number()) |>
-    walk(build_rls_row)
+    walk(prep_script_vars)
 }
 
-build_script_lines <- function(rls_dagletters,
-                               rl_sched_name,
-                               rls_lengte,
-                               rls_30m_blokken,
-                               v_limiet,
+build_script_lines <- function(bc_day_mask,
+                               bc_halfhour_index,
+                               bc_act_wdw,
                                color_rgb,
-                               pl_name) {
+                               pl_name,
+                               duration) {
   script_lines <- c(
     "Radiologik Schedule Segment",
-    rls_dagletters,
-    rls_lengte,
+    bc_day_mask,
+    duration,
     "standaard",
     "ProgramTo=0",
-    rls_30m_blokken,
+    bc_halfhour_index,
     "0",
     "",
-    paste(v_limiet[1], "0", sep = "\t"),
-    paste(v_limiet[2], "0", sep = "\t"),
+    paste(bc_act_wdw[1], "0", sep = "\t"),
+    paste(bc_act_wdw[2], "0", sep = "\t"),
     "ProgramCopyPath=nopath",
     color_rgb,
     "0",
@@ -109,9 +110,8 @@ build_script_lines <- function(rls_dagletters,
   )
 }
 
-build_rls_row <- function(wk_row) {
+prep_script_vars <- function(wk_row) {
   # test: wk_row <- cz_week[1, ]
-  
   parts <- wk_row$rl_sched_name |>
     str_match("^(\\d{4}-\\d{2}-\\d{2})_([a-z]{2}\\d{2}-\\d)_(\\d{3})_(.+)$")
   date_iso <- parts[, 2]
@@ -119,25 +119,17 @@ build_rls_row <- function(wk_row) {
   duration <- as.integer(parts[, 4])
   
   script_lines <- build_script_lines(
-    rls_dagletters  = rls_dagletters_from_slot(slot),
-    rl_sched_name   = wk_row$rl_sched_name,
-    rls_lengte      = duration,
-    rls_30m_blokken = rls_30m_blokken_from_slot(slot),
-    v_limiet        = ls_venster_from_date_duration(date_iso, duration),
-    color_rgb       = paste0("ColorLabel=", wk_row$sched_rgb),
-    pl_name         = wk_row$playlist,
-    duration        = duration
+    bc_day_mask        = day_mask(slot),
+    bc_halfhour_index  = slot_start_halfhour_index(slot), 
+    bc_act_wdw         = bc_wdw(date_iso),
+    color_rgb          = paste0("ColorLabel=", wk_row$sched_rgb),
+    pl_name            = wk_row$playlist,
+    duration           = duration
   )
   
-  schedules_dir <- path(home_prop("home_radiologik"), "Schedule")
-  
-  next_number <- dir_ls(schedules_dir) |>
-    length() |>
-    {\(x) x + 1L}()
-  
   script_file_name <- path(
-    schedules_dir,
-    sprintf("%03d - %s", next_number, rl_sched_name)
+    wk_row$schedules_dir,
+    sprintf("%03d - %s", wk_row$script_nr, wk_row$rl_sched_name)
   )
   
   write_lines(
@@ -149,6 +141,12 @@ build_rls_row <- function(wk_row) {
 }
 
 # > MAIN < ----
+
+# 0. init ----
+config <- read_yaml("config.yaml")
+log_slug <- "pof_cz"
+flap <- flog.appender(appender.file(config$log_appender_file), log_slug)
+
 # 1. load GD-sheet ----
 tryCatch({
   # . trigger GD-auth
@@ -210,5 +208,6 @@ cz_week <- gws_pl_raw |>
          -type,
          -rgb_id)
 
-# 5. compile the schedules ----
-build_rl_scripts(rls_week = cz_week)
+# 5. assemble the schedules ----
+run_assembler(cur_week = cz_week, cur_mac = "LGM")
+run_assembler(cur_week = cz_week, cur_mac = "UZM")
